@@ -1,0 +1,2297 @@
+<!DOCTYPE html>
+<!-- saved from url=(0046)file:///C:/Users/Admin/Downloads/index_14.html -->
+<html lang="pt-BR"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Artesil — Gestão de Faturamento</title>
+<link rel="preconnect" href="https://fonts.googleapis.com/">
+<link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
+<link href="./Artesil — Gestão de Faturamento_files/css2" rel="stylesheet">
+<link rel="stylesheet" href="./Artesil — Gestão de Faturamento_files/tabler-icons.min.css">
+<script src="./Artesil — Gestão de Faturamento_files/chart.umd.js.download"></script>
+<!-- Supabase SDK -->
+<script src="./Artesil — Gestão de Faturamento_files/supabase.min.js.download"></script>
+<script>
+/* ═══════════════════════════════════════════
+   SUPABASE CONFIG — Artesil
+   ═══════════════════════════════════════════ */
+const SUPA_URL = 'https://pdhmkyhbsiqqytuyssfh.supabase.co';
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkaG1reWhic2lxcXl0dXlzc2ZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUxODIwNjQsImV4cCI6MjEwMDc1ODA2NH0.X16KJstZZN0nsQlgvEjCjiFfdb2SxFYf7YAkEV-vQP8';
+const supa = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+/* ── Sincronização: local → Supabase ── */
+async function syncToCloud(){
+  try {
+    // Semanais
+    if(db.semanais.length){
+      const rows = db.semanais.map(p=>({
+        id:p.id, pdv:p.pdv, resp:p.resp, semana:p.semana,
+        marcas:p.marcas, tipo:p.tipo, codmar:p.codmar,
+        datped:p.datped, prevfat:p.prevfat, prazo:p.prazo,
+        valrep:p.valrep, saldo:p.saldo||0,
+        trf:p.trf, rem:p.rem, taxalabel:p.taxaLabel||'',
+        obs:p.obs||''
+      }));
+      await supa.from('semanais').upsert(rows, {onConflict:'id'});
+    }
+    // Especiais
+    if(db.especiais.length){
+      const rows = db.especiais.map(p=>({
+        id:p.id, pdv:p.pdv, resp:p.resp, ciclo:p.ciclo,
+        marcas:p.marcas, codmar:p.codmar, tipo:p.tipo,
+        origem:p.origem||'', datped:p.datped,
+        prevfat:p.prevfat||'', prazo:p.prazo,
+        valrep:p.valrep, totpedido:p.totpedido||p.valrep,
+        trf:p.trf, rem:p.rem, taxalabel:p.taxaLabel||'',
+        fases:p.fases||null, obs:p.obs||''
+      }));
+      await supa.from('especiais').upsert(rows, {onConflict:'id'});
+    }
+    // Metas
+    const metaRows = Object.entries(db.metas).map(([pdv,m])=>({pdv,meta:m.meta,saldo:m.saldo}));
+    await supa.from('metas').upsert(metaRows, {onConflict:'pdv'});
+    // Ciclos
+    if(db.ciclos.length){
+      const rows = db.ciclos.map(c=>({
+        id:c.id, nome:c.nome, inicio:c.inicio||'',
+        fim:c.fim||'', tipo:c.tipo||'', obs:c.obs||''
+      }));
+      await supa.from('ciclos').upsert(rows, {onConflict:'id'});
+    }
+  } catch(e){
+    console.error('Sync error:', e);
+  }
+}
+
+/* ── Carregar dados do Supabase ── */
+async function loadFromCloud(){
+  try {
+    showLoadingOverlay(true);
+    
+    const [semRes, espRes, metaRes, cicRes] = await Promise.all([
+      supa.from('semanais').select('*').order('created_at',{ascending:false}),
+      supa.from('especiais').select('*').order('created_at',{ascending:false}),
+      supa.from('metas').select('*'),
+      supa.from('ciclos').select('*').order('id',{ascending:true}),
+    ]);
+
+    // Semanais
+    if(semRes.data){
+      db.semanais = semRes.data.map(r=>({
+        id:r.id, pdv:r.pdv, resp:r.resp, semana:r.semana,
+        marcas:r.marcas, tipo:r.tipo, codmar:r.codmar,
+        datped:r.datped, prevfat:r.prevfat, prazo:r.prazo,
+        valrep:r.valrep, saldo:r.saldo||0,
+        trf:r.trf, rem:r.rem, taxaLabel:r.taxalabel, obs:r.obs
+      }));
+    }
+    // Especiais
+    if(espRes.data){
+      db.especiais = espRes.data.map(r=>({
+        id:r.id, pdv:r.pdv, resp:r.resp, ciclo:r.ciclo,
+        marcas:r.marcas, codmar:r.codmar, tipo:r.tipo,
+        origem:r.origem, datped:r.datped,
+        prevfat:r.prevfat, prazo:r.prazo,
+        valrep:r.valrep, totpedido:r.totpedido,
+        trf:r.trf, rem:r.rem, taxaLabel:r.taxalabel,
+        fases:r.fases||[], obs:r.obs
+      }));
+    }
+    // Metas
+    if(metaRes.data && metaRes.data.length){
+      metaRes.data.forEach(r=>{
+        if(db.metas[r.pdv]) db.metas[r.pdv]={meta:r.meta, saldo:r.saldo};
+      });
+    }
+    // Ciclos
+    if(cicRes.data){
+      db.ciclos = cicRes.data.map(r=>({
+        id:r.id, nome:r.nome, inicio:r.inicio,
+        fim:r.fim, tipo:r.tipo, obs:r.obs
+      }));
+    }
+    saveDB(); // mirror to localStorage as cache
+    updateSBCount();
+    renderDash(); rendS(); rendE();
+    const cs=document.getElementById('cloud-status');
+    if(cs){cs.textContent='☁️ online';cs.style.background='var(--accent-light)';cs.style.color='var(--accent)';}
+  } catch(e){
+    console.error('Load error:', e);
+    toast('Erro ao carregar dados. Usando cache local.','err');
+    const cse=document.getElementById('cloud-status');
+    if(cse){cse.textContent='⚠️ offline';cse.style.background='var(--red-light)';cse.style.color='var(--red)';}
+  } finally {
+    showLoadingOverlay(false);
+  }
+}
+
+/* ── Delete helpers ── */
+async function deleteFromCloud(table, id){
+  try { await supa.from(table).delete().eq('id', id); }
+  catch(e){ console.error('Delete error:', e); }
+}
+
+/* ── Loading overlay ── */
+function showLoadingOverlay(show){
+  let ov = document.getElementById('loading-overlay');
+  if(!ov){
+    ov = document.createElement('div');
+    ov.id = 'loading-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(255,255,255,.85);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;font-family:DM Sans,sans-serif';
+    ov.innerHTML = '<div style="width:36px;height:36px;border:3px solid #E8F0ED;border-top-color:#2D4A3E;border-radius:50%;animation:spin .7s linear infinite"></div><div style="font-size:13px;color:#2D4A3E;font-weight:500">Carregando dados...</div>';
+    document.body.appendChild(ov);
+    const style = document.createElement('style');
+    style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(style);
+  }
+  ov.style.display = show ? 'flex' : 'none';
+}
+
+/* ── Real-time subscription ── */
+function startRealtime(){
+  supa.channel('artesil-changes')
+    .on('postgres_changes',{event:'*',schema:'public',table:'semanais'},()=>loadFromCloud())
+    .on('postgres_changes',{event:'*',schema:'public',table:'especiais'},()=>loadFromCloud())
+    .on('postgres_changes',{event:'*',schema:'public',table:'metas'},()=>loadFromCloud())
+    .subscribe();
+}
+</script>
+
+<style>
+:root{
+  --bg:#F5F4F0;--surface:#FFFFFF;--surface2:#EFEDE8;--surface3:#E8E6DF;
+  --border:rgba(40,38,30,0.10);--border2:rgba(40,38,30,0.18);
+  --text:#1C1B17;--text2:#6B6860;--text3:#A8A59E;
+  --accent:#2D4A3E;--accent2:#1E3329;--accent-light:#E8F0ED;--accent-mid:#4A7A68;
+  --gold:#8B6914;--gold-light:#F5EDD6;
+  --red:#B83232;--red-light:#FAE8E8;
+  --blue:#1E4A7A;--blue-light:#E8F0FA;
+  --r:10px;--r-lg:14px;--r-xl:20px;
+  --sh:0 1px 4px rgba(0,0,0,0.07),0 1px 2px rgba(0,0,0,0.04);
+  --sh-md:0 4px 16px rgba(0,0,0,0.10),0 1px 4px rgba(0,0,0,0.06);
+}
+/* Force light theme always */
+body{color-scheme:light}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}
+
+/* ─── LAYOUT ─── */
+.app{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:230px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;flex-shrink:0}
+.content{flex:1;overflow-y:auto;padding:24px}
+
+/* ─── SIDEBAR ─── */
+.sb-brand{padding:20px 18px 16px;border-bottom:1px solid var(--border)}
+.sb-logo{display:flex;align-items:center;gap:10px;margin-bottom:2px}
+.sb-logo-mark{width:34px;height:34px;background:var(--accent);border-radius:9px;display:flex;align-items:center;justify-content:center}
+.sb-logo-mark i{color:#fff;font-size:17px}
+.sb-logo-name{font-size:15px;font-weight:600;letter-spacing:-0.3px;color:var(--text)}
+.sb-logo-sub{font-size:11px;color:var(--text3);margin-left:44px;margin-top:-2px}
+.sb-section{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:1px;padding:14px 18px 5px}
+.nav-btn{display:flex;align-items:center;gap:9px;width:100%;padding:8px 14px;margin:1px 8px;width:calc(100% - 16px);border:none;background:none;color:var(--text2);font-size:13px;font-family:inherit;border-radius:8px;cursor:pointer;transition:.15s;text-align:left}
+.nav-btn:hover{background:var(--surface2);color:var(--text)}
+.nav-btn.active{background:var(--accent-light);color:var(--accent);font-weight:500}
+.nav-btn i{font-size:17px;width:19px;flex-shrink:0}
+.sb-footer{margin-top:auto;padding:14px 18px;border-top:1px solid var(--border);font-size:11px;color:var(--text3);line-height:1.6}
+
+/* ─── TOPBAR ─── */
+.topbar-left{display:flex;align-items:center;gap:10px}
+.topbar-title{font-size:15px;font-weight:600;color:var(--text)}
+.topbar-sub{font-size:12px;color:var(--text3)}
+.topbar-right{display:flex;align-items:center;gap:8px}
+.mobile-btn{display:none;width:34px;height:34px;align-items:center;justify-content:center;border:1px solid var(--border2);border-radius:8px;background:var(--surface);cursor:pointer;color:var(--text);font-size:18px}
+
+/* ─── VIEWS ─── */
+.view{display:none}.view.active{display:block}
+
+/* ─── CARDS ─── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:20px 22px;margin-bottom:16px;box-shadow:var(--sh)}
+.card-title{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.6px;margin-bottom:16px}
+
+/* ─── METRICS ─── */
+.metrics-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.metric{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:16px 18px;box-shadow:var(--sh);position:relative;overflow:hidden}
+.metric::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:var(--r-lg) var(--r-lg) 0 0}
+.metric.green::before{background:var(--accent)}
+.metric.gold::before{background:var(--gold)}
+.metric.red::before{background:var(--red)}
+.metric.blue::before{background:var(--blue)}
+.metric-icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;font-size:15px}
+.metric.green .metric-icon{background:var(--accent-light);color:var(--accent)}
+.metric.gold .metric-icon{background:var(--gold-light);color:var(--gold)}
+.metric.red .metric-icon{background:var(--red-light);color:var(--red)}
+.metric.blue .metric-icon{background:var(--blue-light);color:var(--blue)}
+.metric-label{font-size:11px;color:var(--text3);font-weight:500;text-transform:uppercase;letter-spacing:.4px}
+.metric-value{font-size:21px;font-weight:600;color:var(--text);margin:3px 0;letter-spacing:-.5px;line-height:1.1}
+.metric-value.sm{font-size:15px}
+.metric-delta{font-size:11px;color:var(--text3)}
+
+/* ─── PROGRESS BAR ─── */
+.progress-bar{height:5px;background:var(--surface2);border-radius:99px;margin-top:6px;overflow:hidden}
+.progress-fill{height:100%;border-radius:99px;transition:width .4s ease}
+.fill-green{background:var(--accent)}
+.fill-gold{background:var(--gold)}
+.fill-red{background:var(--red)}
+
+/* ─── FORMS ─── */
+.form-block{margin-bottom:20px}
+.form-block-title{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.6px;padding-bottom:8px;border-bottom:1px solid var(--border);margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.form-block-title i{font-size:14px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px}
+.grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:12px}
+.fg{display:flex;flex-direction:column;gap:5px}
+.fg label{font-size:12px;font-weight:500;color:var(--text2)}
+.req{color:var(--red)}
+.fg input,.fg select,.fg textarea{
+  height:36px;padding:0 11px;background:var(--bg);border:1px solid var(--border2);
+  border-radius:8px;font-size:13px;color:var(--text);font-family:'DM Sans',sans-serif;
+  outline:none;transition:.15s;-webkit-appearance:none;
+}
+.fg textarea{height:auto;padding:9px 11px;resize:vertical}
+.fg input:focus,.fg select:focus,.fg textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(45,74,62,.12)}
+.fg input.err,.fg select.err{border-color:var(--red)!important}
+.field-err{font-size:11px;color:var(--red);display:none}
+.field-err.show{display:block}
+
+/* ─── CALC PANEL ─── */
+.calc-box{background:var(--accent-light);border:1px solid rgba(45,74,62,.15);border-radius:var(--r);padding:14px 18px;margin-top:4px}
+.calc-box-title{font-size:11px;color:var(--accent-mid);font-weight:500;margin-bottom:10px;display:flex;align-items:center;gap:5px}
+.calc-cols{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.calc-col-label{font-size:11px;color:var(--accent-mid);margin-bottom:3px}
+.calc-col-val{font-size:16px;font-weight:600;color:var(--accent);font-family:'DM Mono',monospace}
+.calc-col-val.ok{color:var(--accent)}
+.calc-col-val.warn{color:var(--gold)}
+.calc-col-val.over{color:var(--red)}
+.saldo-alert{font-size:11px;margin-top:8px;padding:6px 10px;border-radius:6px;display:none}
+.saldo-alert.ok{background:rgba(45,74,62,.15);color:var(--accent);display:flex;align-items:center;gap:5px}
+.saldo-alert.warn{background:rgba(139,105,20,.15);color:var(--gold);display:flex;align-items:center;gap:5px}
+.saldo-alert.over{background:rgba(180,50,50,.15);color:var(--red);display:flex;align-items:center;gap:5px}
+
+/* ─── BUTTONS ─── */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:.15s;font-family:'DM Sans',sans-serif;white-space:nowrap}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn-primary:hover{background:var(--accent2)}
+.btn-ghost{background:var(--surface);color:var(--text);border-color:var(--border2)}
+.btn-ghost:hover{background:var(--surface2)}
+.btn-danger{background:var(--red-light);color:var(--red);border-color:transparent}
+.btn-danger:hover{background:var(--red);color:#fff}
+.btn-gold{background:var(--gold-light);color:var(--gold);border-color:transparent}
+.btn-gold:hover{background:var(--gold);color:#fff}
+.btn-sm{padding:5px 11px;font-size:12px;border-radius:7px}
+.btn-icon{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border2);background:var(--surface);border-radius:7px;cursor:pointer;color:var(--text2);font-size:15px;transition:.15s}
+.btn-icon:hover{background:var(--red-light);color:var(--red);border-color:transparent}
+.btn-icon.edit:hover{background:var(--accent-light);color:var(--accent);border-color:transparent}
+.form-actions{display:flex;gap:8px;justify-content:flex-end;padding-top:16px;border-top:1px solid var(--border);margin-top:20px}
+
+/* ─── TABLES ─── */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead th{padding:9px 12px;text-align:left;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody td{padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text);vertical-align:middle}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:var(--surface2)}
+.total-row td{font-weight:600;background:var(--surface2)!important;font-family:'DM Mono',monospace;font-size:12px}
+.tr{text-align:right}.mono{font-family:'DM Mono',monospace;font-size:12px}
+.neg{color:var(--red)!important}.pos{color:var(--accent)!important}
+
+/* ─── BADGES ─── */
+.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;white-space:nowrap}
+.b-sem{background:var(--blue-light);color:var(--blue)}
+.b-esp{background:var(--accent-light);color:var(--accent)}
+.b-kit{background:var(--gold-light);color:var(--gold)}
+.b-lan{background:var(--surface2);color:var(--text2)}
+.b-thais{background:#F0E6FA;color:#5C2D8A}
+.b-tyerry{background:#E6F0FA;color:var(--blue)}
+.b-industria{background:#FFF0E0;color:#A04A00}
+
+/* ─── FILTER BAR ─── */
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+.filters select,.filters input{height:32px;padding:0 10px;border:1px solid var(--border2);border-radius:7px;background:var(--bg);color:var(--text);font-size:12px;font-family:'DM Sans',sans-serif;outline:none}
+.filters select:focus,.filters input:focus{border-color:var(--accent)}
+
+/* ─── SECTION HDR ─── */
+.sec-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.sec-title{font-size:15px;font-weight:600;color:var(--text)}
+.pill{background:var(--surface2);color:var(--text2);font-size:11px;padding:2px 9px;border-radius:99px;font-weight:500}
+
+/* ─── EMPTY ─── */
+.empty{text-align:center;padding:36px 20px;color:var(--text2)}
+.empty i{font-size:32px;color:var(--text3);display:block;margin-bottom:8px}
+.empty p{font-size:13px;color:var(--text3)}
+
+/* ─── CHARTS ─── */
+.charts-2{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;margin-bottom:16px}
+
+/* ─── METAS TABLE ─── */
+.meta-row{display:grid;grid-template-columns:1fr 110px 110px 110px 90px;gap:0;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px}
+.meta-row:last-child{border-bottom:none}
+.meta-row:hover{background:var(--surface2)}
+.meta-row.hdr{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;padding:8px 14px;background:var(--surface2);border-bottom:1px solid var(--border);border-radius:var(--r) var(--r) 0 0}
+.meta-input{height:30px;padding:0 8px;border:1px solid var(--border2);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;font-family:'DM Mono',monospace;outline:none;width:100%}
+.meta-input:focus{border-color:var(--accent)}
+
+/* ─── MARCAS TOGGLE ─── */
+.marcas-group{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
+.marca-btn{display:inline-flex;align-items:center;gap:5px;padding:6px 13px;border-radius:8px;border:1px solid var(--border2);background:var(--bg);color:var(--text2);font-size:12px;font-weight:600;cursor:pointer;transition:.15s;font-family:'DM Sans',sans-serif;letter-spacing:.3px;user-select:none}
+.marca-btn:hover{border-color:var(--accent);color:var(--accent)}
+.marca-btn.sel{border-color:transparent;color:#fff}
+.marca-btn.bot.sel{background:#2D4A3E}
+.marca-btn.eud.sel{background:#1E4A7A}
+.marca-btn.qdb.sel{background:#8B6914}
+.marca-btn.oui.sel{background:#7A3A6E}
+.marca-btn .dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.7}
+/* ─── CICLOS ─── */
+.ciclos-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+.ciclo-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:16px;cursor:pointer;transition:.15s;position:relative}
+.ciclo-card:hover{border-color:var(--accent);box-shadow:var(--sh-md)}
+.ciclo-card.active-ciclo{border-color:var(--accent);background:var(--accent-light)}
+.ciclo-nome{font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px}
+.ciclo-fat{font-size:11px;color:var(--text3);margin-bottom:8px}
+.ciclo-val{font-size:17px;font-weight:600;font-family:'DM Mono',monospace;color:var(--accent)}
+.ciclo-badge{position:absolute;top:10px;right:10px}
+
+/* ─── PRINT ─── */
+@media print{
+  .sidebar,.topbar,.no-print{display:none!important}
+  .main{margin:0}
+  .content{padding:0;overflow:visible}
+  .view{display:none!important}
+  #view-relatorio{display:block!important}
+  .card{box-shadow:none;border:1px solid #ddd;break-inside:avoid}
+  body{background:#fff;font-size:12px}
+  .print-header{display:block!important}
+}
+.print-header{display:none;text-align:center;margin-bottom:20px;border-bottom:2px solid var(--accent);padding-bottom:12px}
+.print-header h1{font-size:18px;font-weight:700;color:var(--accent)}
+.print-header p{font-size:12px;color:var(--text2)}
+
+/* ─── TOAST ─── */
+#toasts{position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.toast{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:11px 15px;box-shadow:var(--sh-md);display:flex;align-items:center;gap:9px;font-size:13px;min-width:240px;animation:toastIn .2s ease}
+.toast.ok{border-left:3px solid var(--accent)}.toast.ok i{color:var(--accent)}
+.toast.err{border-left:3px solid var(--red)}.toast.err i{color:var(--red)}
+.toast.warn{border-left:3px solid var(--gold)}.toast.warn i{color:var(--gold)}
+@keyframes toastIn{from{transform:translateX(16px);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* ─── RESPONSIVE ─── */
+@media(max-width:780px){
+  .sidebar{position:fixed;top:0;left:0;height:100%;z-index:200;transform:translateX(-100%);transition:.25s}
+  .sidebar.open{transform:translateX(0)}
+  .mobile-btn{display:flex}
+  .main{margin-left:0}
+  .metrics-row{grid-template-columns:1fr 1fr}
+  .charts-2{grid-template-columns:1fr}
+  .grid-3,.grid-4{grid-template-columns:1fr 1fr}
+  .grid-2{grid-template-columns:1fr}
+  .ciclos-grid{grid-template-columns:1fr 1fr}
+  .content{padding:14px}
+}
+</style>
+<style>@keyframes spin{to{transform:rotate(360deg)}}</style></head>
+<body>
+<div class="app">
+
+<!-- ═══════════════ SIDEBAR ═══════════════ -->
+<nav class="sidebar" id="sidebar">
+  <div class="sb-brand">
+    <div class="sb-logo">
+      <div class="sb-logo-mark"><i class="ti ti-droplet-filled"></i></div>
+      <div class="sb-logo-name">Artesil</div>
+    </div>
+    <div class="sb-logo-sub">Gestão de Faturamento</div>
+  </div>
+
+  <div class="sb-section">Visão Geral</div>
+  <button class="nav-btn active" onclick="go(&#39;dashboard&#39;,this)"><i class="ti ti-layout-dashboard"></i>Dashboard</button>
+  <button class="nav-btn" onclick="go(&#39;ciclos&#39;,this)"><i class="ti ti-refresh"></i>Ciclos &amp; Previsão</button>
+  <button class="nav-btn" onclick="go(&#39;previsao&#39;,this)"><i class="ti ti-calendar-due"></i>Contas a Receber</button>
+
+  <div class="sb-section">Pedidos</div>
+  <button class="nav-btn" onclick="go(&#39;semanal&#39;,this)"><i class="ti ti-calendar-week"></i>Pedido Semanal</button>
+  <button class="nav-btn" onclick="go(&#39;especial&#39;,this)"><i class="ti ti-star"></i>Pedido Especial</button>
+
+  <div class="sb-section">Financeiro</div>
+  <button class="nav-btn" onclick="go(&#39;metas&#39;,this)"><i class="ti ti-target"></i>Metas &amp; Saldos</button>
+  <button class="nav-btn" onclick="go(&#39;historico&#39;,this)"><i class="ti ti-table"></i>Histórico</button>
+  <button class="nav-btn" onclick="go(&#39;relatorio&#39;,this)"><i class="ti ti-printer"></i>Relatório / PDF</button>
+
+  <div class="sb-footer">
+    <strong>v2.1</strong> · Artesil 2026 &nbsp;<span id="cloud-status" style="font-size: 10px; padding: 1px 6px; border-radius: 99px; background: var(--accent-light); color: var(--accent);">☁️ online</span><br>
+    <span id="sb-count">0 registros salvos</span>
+  </div>
+</nav>
+
+<!-- ═══════════════ MAIN ═══════════════ -->
+<div class="main">
+  <div class="topbar">
+    <div class="topbar-left">
+      <button class="mobile-btn" onclick="document.getElementById(&#39;sidebar&#39;).classList.toggle(&#39;open&#39;)"><i class="ti ti-menu-2"></i></button>
+      <div>
+        <div class="topbar-title" id="tb-title">Dashboard</div>
+        <div class="topbar-sub" id="tb-sub">Visão geral · Artesil</div>
+      </div>
+    </div>
+    <div class="topbar-right no-print">
+      <button class="btn btn-ghost btn-sm" onclick="exportCSV()"><i class="ti ti-download"></i>CSV</button>
+      <button class="btn btn-primary btn-sm" onclick="go(&#39;semanal&#39;,document.querySelectorAll(&#39;.nav-btn&#39;)[3])"><i class="ti ti-plus"></i>Novo Pedido</button>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- ══ DASHBOARD ══ -->
+    <div id="view-dashboard" class="view active">
+      <div class="metrics-row">
+        <div class="metric green">
+          <div class="metric-icon"><i class="ti ti-wallet"></i></div>
+          <div class="metric-label">Saldo Total</div>
+          <div class="metric-value sm" id="m-saldo">R$ 1.919.714,01</div>
+          <div class="metric-delta" id="m-saldo-sub">Semana 16–22/07/2026</div>
+          <div class="progress-bar"><div class="progress-fill fill-green" id="prog-saldo" style="width:70%"></div></div>
+        </div>
+        <div class="metric gold">
+          <div class="metric-icon"><i class="ti ti-calendar-week"></i></div>
+          <div class="metric-label">Pedidos Semanais</div>
+          <div class="metric-value" id="m-nsem">0</div>
+          <div class="metric-delta">registros novos</div>
+        </div>
+        <div class="metric blue">
+          <div class="metric-icon"><i class="ti ti-star"></i></div>
+          <div class="metric-label">Pedidos Especiais</div>
+          <div class="metric-value" id="m-nesp">0</div>
+          <div class="metric-delta">registros novos</div>
+        </div>
+        <div class="metric red">
+          <div class="metric-icon"><i class="ti ti-target"></i></div>
+          <div class="metric-label">Atingimento Meta</div>
+          <div class="metric-value" id="m-meta">26%</div>
+          <div class="metric-delta">vs meta de compra</div>
+          <div class="progress-bar"><div class="progress-fill fill-green" id="prog-meta" style="width: 26%;"></div></div>
+        </div>
+      </div>
+
+      <div class="charts-2">
+        <div class="card">
+          <div class="card-title">Saldo de compra por PDV — semana base</div>
+          <div style="position:relative;height:250px"><canvas id="ch-pdv" role="img" aria-label="Saldo por PDV" style="box-sizing: border-box; display: block; height: 250px; width: 692px;" width="865" height="312">Saldo por PDV.</canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Tipos de pedido</div>
+          <div style="position:relative;height:250px"><canvas id="ch-tipo" role="img" aria-label="Tipos de pedido" style="box-sizing: border-box; display: block; height: 250px; width: 446px;" width="558" height="312">Tipos.</canvas></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-hdr">
+          <div class="sec-title">Resumo semanal — PDVs</div>
+          <span style="font-size:12px;color:var(--text3)">Prazo 30/60D · base 16/07–22/07/2026</span>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>PDV</th><th>Responsável</th><th class="tr">Saldo Compra</th><th class="tr">TRF +47%</th><th class="tr">REM +15%</th><th>Prev. Fat.</th></tr></thead>
+            <tbody id="tbl-dash"><tr>
+    <td style="font-size:12px">18501 - MATEUS BORDIN &amp; CIA LTDA / VD</td>
+    <td><span class="badge b-thais">THAIS</span></td>
+    <td class="tr mono ">R$ 1.315.771,08</td>
+    <td class="tr mono">R$ 1.934.183,49</td>
+    <td class="tr mono">R$ 1.513.136,74</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr>
+    <td style="font-size:12px">23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB</td>
+    <td><span class="badge b-thais">THAIS</span></td>
+    <td class="tr mono ">R$ 0,00</td>
+    <td class="tr mono">—</td>
+    <td class="tr mono">—</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr>
+    <td style="font-size:12px">4605 - ARTESIL PRODUTOS NATURAIS LTDA / CENTRO</td>
+    <td><span class="badge b-tyerry">TYERRY</span></td>
+    <td class="tr mono ">R$ 116.857,43</td>
+    <td class="tr mono">R$ 171.780,42</td>
+    <td class="tr mono">R$ 134.386,04</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr>
+    <td style="font-size:12px">13136 - ROBERTA BORDIN / PÁTIO</td>
+    <td><span class="badge b-thais">THAIS</span></td>
+    <td class="tr mono ">R$ 146.835,07</td>
+    <td class="tr mono">R$ 215.847,55</td>
+    <td class="tr mono">R$ 168.860,33</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr>
+    <td style="font-size:12px">12540 - MATEUS BORDIN - ME / BRASÃO</td>
+    <td><span class="badge b-thais">THAIS</span></td>
+    <td class="tr mono ">R$ 27.962,00</td>
+    <td class="tr mono">R$ 41.104,14</td>
+    <td class="tr mono">R$ 32.156,30</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr>
+    <td style="font-size:12px">21016 - ROBERTA BORDIN &amp; CIA LTDA / EFAPI</td>
+    <td><span class="badge b-tyerry">TYERRY</span></td>
+    <td class="tr mono ">R$ 67.740,38</td>
+    <td class="tr mono">R$ 99.578,36</td>
+    <td class="tr mono">R$ 77.901,44</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr>
+    <td style="font-size:12px">12716 - MATEUS BORDIN - ME / CENTER</td>
+    <td><span class="badge b-tyerry">TYERRY</span></td>
+    <td class="tr mono ">R$ 72.763,69</td>
+    <td class="tr mono">R$ 106.962,62</td>
+    <td class="tr mono">R$ 83.678,24</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr>
+    <td style="font-size:12px">12721 - MATEUS BORDIN - ME / ITÁLIA</td>
+    <td><span class="badge b-tyerry">TYERRY</span></td>
+    <td class="tr mono ">R$ 49.381,66</td>
+    <td class="tr mono">R$ 72.591,04</td>
+    <td class="tr mono">R$ 56.788,91</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr>
+    <td style="font-size:12px">8348 - ARTESIL PERFUMES E COSMETICOS / XAXIM</td>
+    <td><span class="badge b-tyerry">TYERRY</span></td>
+    <td class="tr mono ">R$ 39.881,62</td>
+    <td class="tr mono">R$ 58.625,98</td>
+    <td class="tr mono">R$ 45.863,86</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr>
+    <td style="font-size:12px">12354 - MATEUS BORDIN - ME / ALFA</td>
+    <td><span class="badge b-thais">THAIS</span></td>
+    <td class="tr mono ">R$ 77.217,60</td>
+    <td class="tr mono">R$ 113.509,87</td>
+    <td class="tr mono">R$ 88.800,24</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr>
+    <td style="font-size:12px">23857 - VICTORIA PERFUMES E COSMETICOS LTDA / PULSE</td>
+    <td><span class="badge b-thais">THAIS</span></td>
+    <td class="tr mono ">R$ 5.303,48</td>
+    <td class="tr mono">R$ 7.796,12</td>
+    <td class="tr mono">R$ 6.099,00</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr><tr class="total-row"><td colspan="2"><strong>Total</strong></td><td class="tr">R$ 1.919.714,01</td><td class="tr">R$ 2.821.979,59</td><td class="tr">R$ 2.207.671,11</td><td></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ CICLOS & PREVISÃO ══ -->
+    <div id="view-ciclos" class="view">
+      <div class="card" style="margin-bottom:16px">
+        <div class="sec-hdr">
+          <div class="sec-title">Ciclos Registrados</div>
+          <button class="btn btn-primary btn-sm" onclick="abrirModalCiclo()"><i class="ti ti-plus"></i>Novo Ciclo</button>
+        </div>
+        <div class="ciclos-grid" id="ciclos-grid"><p style="color:var(--text3);font-size:13px;padding:8px">Nenhum ciclo cadastrado.</p></div>
+      </div>
+
+      <div class="card" id="ciclo-detalhe" style="display:none">
+        <div class="sec-hdr">
+          <div class="sec-title" id="ciclo-det-title">—</div>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById(&#39;ciclo-detalhe&#39;).style.display=&#39;none&#39;"><i class="ti ti-x"></i></button>
+        </div>
+        <div class="charts-2" style="margin-bottom:0">
+          <div>
+            <div class="card-title">Previsão de faturamento por PDV</div>
+            <div style="position:relative;height:240px"><canvas id="ch-ciclo" role="img" aria-label="Faturamento por ciclo">Ciclo.</canvas></div>
+          </div>
+          <div>
+            <div class="card-title">Pedidos do ciclo</div>
+            <div class="tbl-wrap" style="max-height:260px;overflow-y:auto">
+              <table><thead><tr><th>PDV</th><th class="tr">Val. Rep.</th><th class="tr">Total</th></tr></thead>
+              <tbody id="tbl-ciclo-det"></tbody></table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal novo ciclo -->
+      <div class="card">
+        <div class="card-title">Cadastrar novo ciclo</div>
+        <div class="grid-3">
+          <div class="fg"><label>Nome do Ciclo <span class="req">*</span></label>
+            <input type="text" id="nc-nome" placeholder="ex: Ciclo 12/2026"></div>
+          <div class="fg"><label>Início</label><input type="date" id="nc-inicio"></div>
+          <div class="fg"><label>Fim / Previsão Fat.</label><input type="date" id="nc-fim"></div>
+        </div>
+        <div class="grid-2">
+          <div class="fg"><label>Tipo</label>
+            <select id="nc-tipo">
+              <option>Boticário (BOT)</option><option>Eudora (EUD)</option>
+              <option>Quem Disse Berenice (QDB)</option><option>Misto BOT/EUD/QDB</option>
+            </select>
+          </div>
+          <div class="fg"><label>Observação</label><input type="text" id="nc-obs" placeholder="opcional"></div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" onclick="salvarCiclo()"><i class="ti ti-device-floppy"></i>Salvar Ciclo</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ PEDIDO SEMANAL ══ -->
+    <div id="view-semanal" class="view">
+      <div class="card">
+        <div class="form-block">
+          <div class="form-block-title"><i class="ti ti-building-store"></i>Identificação</div>
+          <div class="grid-2">
+            <div class="fg"><label>PDV <span class="req">*</span></label>
+              <select id="s-pdv" onchange="calcS()">
+                <option value="">— selecione —</option>
+                <option>18501 - MATEUS BORDIN &amp; CIA LTDA / VD</option>
+                <option>23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB</option>
+                <option>4605 - ARTESIL PRODUTOS NATURAIS LTDA / CENTRO</option>
+                <option>13136 - ROBERTA BORDIN / PÁTIO</option>
+                <option>12540 - MATEUS BORDIN - ME / BRASÃO</option>
+                <option>21016 - ROBERTA BORDIN &amp; CIA LTDA / EFAPI</option>
+                <option>12716 - MATEUS BORDIN - ME / CENTER</option>
+                <option>12721 - MATEUS BORDIN - ME / ITÁLIA</option>
+                <option>8348 - ARTESIL PERFUMES E COSMETICOS / XAXIM</option>
+                <option>12354 - MATEUS BORDIN - ME / ALFA</option>
+                <option>23857 - VICTORIA PERFUMES E COSMETICOS LTDA / PULSE</option>
+              </select>
+              <span class="field-err" id="fe-s-pdv">Selecione um PDV</span>
+            </div>
+            <div class="fg"><label>Responsável <span class="req">*</span></label>
+              <select id="s-resp">
+                <option value="">— selecione —</option>
+                <option>THAIS</option><option>TYERRY</option>
+              </select>
+              <span class="field-err" id="fe-s-resp">Selecione o responsável</span>
+            </div>
+          </div>
+          <div class="grid-3">
+            <div class="fg"><label>Semana de Referência <span class="req">*</span></label>
+              <input id="s-semana" type="text" placeholder="ex: 16/07 a 22/07/2026" value="16/07 a 22/07/2026">
+              <span class="field-err" id="fe-s-semana">Informe a semana</span>
+            </div>
+            <div class="fg"><label>Marcas</label>
+              <div class="marcas-group" id="s-marcas-group">
+                <button type="button" class="marca-btn bot" onclick="toggleMarca(&#39;s&#39;,&#39;BOT&#39;,this)"><span class="dot"></span>BOT</button>
+                <button type="button" class="marca-btn eud" onclick="toggleMarca(&#39;s&#39;,&#39;EUD&#39;,this)"><span class="dot"></span>EUD</button>
+                <button type="button" class="marca-btn qdb" onclick="toggleMarca(&#39;s&#39;,&#39;QDB&#39;,this)"><span class="dot"></span>QDB</button>
+                <button type="button" class="marca-btn oui" onclick="toggleMarca(&#39;s&#39;,&#39;OUI&#39;,this)"><span class="dot"></span>OUI</button>
+              </div>
+              <input type="hidden" id="s-marcas" value="">
+            </div>
+            <div class="fg"><label>Tipo</label>
+              <select id="s-tipo"><option>Semanal</option><option>Pedido Indústria</option></select>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-block">
+          <div class="form-block-title"><i class="ti ti-calendar"></i>Datas</div>
+          <div class="grid-4">
+            <div class="fg"><label>Código Pedido MAR</label><input id="s-codmar" type="text" placeholder="2191246"></div>
+            <div class="fg"><label>Data do Pedido <span class="req">*</span></label>
+              <input id="s-datped" type="date">
+              <span class="field-err" id="fe-s-datped">Informe a data</span>
+            </div>
+            <div class="fg"><label>Prev. Faturamento <span class="req">*</span></label>
+              <input id="s-prevfat" type="date">
+              <span class="field-err" id="fe-s-prevfat">Informe a previsão</span>
+            </div>
+            <div class="fg"><label>Prazo de Pagamento</label>
+              <select id="s-prazo"><option>30/60D</option><option>À VISTA - 5D</option><option>30D</option></select>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-block">
+          <div class="form-block-title"><i class="ti ti-currency-dollar"></i>Valores</div>
+          <div class="grid-2">
+            <div class="fg"><label>Valor de Reposição (R$) <span class="req">*</span></label>
+              <input id="s-valrep" type="number" placeholder="0,00" step="0.01" min="0" oninput="calcS()">
+              <span class="field-err" id="fe-s-valrep">Informe o valor</span>
+            </div>
+            <div class="fg"><label>Observação</label>
+              <input id="s-obs" type="text" placeholder="ex: Reposição perfumaria">
+            </div>
+          </div>
+          <div class="calc-box">
+            <div class="calc-box-title"><i class="ti ti-calculator"></i><span id="s-calc-label">Cálculo automático</span></div>
+            <div class="calc-cols">
+              <div><div class="calc-col-label">TRF</div><div class="calc-col-val" id="s-trf">R$ 0,00</div></div>
+              <div><div class="calc-col-label">REM</div><div class="calc-col-val" id="s-rem">R$ 0,00</div></div>
+              <div><div class="calc-col-label">Total c/ taxas</div><div class="calc-col-val" id="s-tot">R$ 0,00</div></div>
+              <div><div class="calc-col-label">Disponível (Meta − Gasto)</div><div class="calc-col-val ok" id="s-saldo-disp">—</div></div>
+            </div>
+            <div class="saldo-alert" id="s-saldo-alert"></div>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-ghost" onclick="limpar(&#39;s&#39;)"><i class="ti ti-refresh"></i>Limpar</button>
+          <button class="btn btn-primary" onclick="salvarS()"><i class="ti ti-device-floppy"></i>Salvar Pedido Semanal</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-hdr">
+          <div class="sec-title">Pedidos Semanais</div>
+          <span class="pill" id="cnt-s">0</span>
+        </div>
+        <div class="filters">
+          <select id="sf-pdv" onchange="rendS()"><option value="">Todos os PDVs</option>
+            <option>18501 - MATEUS BORDIN &amp; CIA LTDA / VD</option>
+            <option>23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB</option>
+            <option>4605 - ARTESIL PRODUTOS NATURAIS LTDA / CENTRO</option>
+            <option>13136 - ROBERTA BORDIN / PÁTIO</option>
+            <option>12540 - MATEUS BORDIN - ME / BRASÃO</option>
+            <option>21016 - ROBERTA BORDIN &amp; CIA LTDA / EFAPI</option>
+            <option>12716 - MATEUS BORDIN - ME / CENTER</option>
+            <option>12721 - MATEUS BORDIN - ME / ITÁLIA</option>
+            <option>8348 - ARTESIL PERFUMES E COSMETICOS / XAXIM</option>
+            <option>12354 - MATEUS BORDIN - ME / ALFA</option>
+            <option>23857 - VICTORIA PERFUMES E COSMETICOS LTDA / PULSE</option>
+          </select>
+          <select id="sf-resp" onchange="rendS()"><option value="">Todos responsáveis</option><option>THAIS</option><option>TYERRY</option></select>
+          <input type="text" id="sf-sem" placeholder="Filtrar semana..." oninput="rendS()" style="max-width:180px">
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>PDV</th><th>Resp.</th><th>Semana</th><th>Marcas</th><th>Cód. MAR</th><th class="tr">Val. Rep.</th><th class="tr">Saldo</th><th class="tr">TRF</th><th class="tr">REM</th><th>Prev. Fat.</th><th>Obs.</th><th></th></tr></thead>
+            <tbody id="tbl-sem"><tr><td colspan="12"><div class="empty"><i class="ti ti-inbox"></i><p>Nenhum pedido encontrado.</p></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ PEDIDO ESPECIAL ══ -->
+    <div id="view-especial" class="view">
+      <div class="card">
+        <div class="form-block">
+          <div class="form-block-title"><i class="ti ti-building-store"></i>Identificação</div>
+          <div class="grid-2">
+            <div class="fg"><label>PDV <span class="req">*</span></label>
+              <select id="e-pdv" onchange="calcE();applyDefaultCond()">
+                <option value="">— selecione —</option>
+                <option>18501 - MATEUS BORDIN &amp; CIA LTDA / VD</option>
+                <option>23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB</option>
+                <option>4605 - ARTESIL PRODUTOS NATURAIS LTDA / CENTRO</option>
+                <option>13136 - ROBERTA BORDIN - SHOPPING</option>
+                <option>12540 - MATEUS BORDIN - ME / BRASÃO</option>
+                <option>21016 - ROBERTA BORDIN &amp; CIA LTDA / EFAPI</option>
+                <option>12716 - MATEUS BORDIN - ME / CENTER</option>
+                <option>12721 - MATEUS BORDIN - ME / ITÁLIA</option>
+                <option>8348 - ARTESIL PERFUMES E COSMETICOS / XAXIM</option>
+                <option>12354 - MATEUS BORDIN - ME / ALFA</option>
+                <option>23857 - VICTORIA PERFUMES E COSMETICOS LTDA / PULSE</option>
+              </select>
+              <span class="field-err" id="fe-e-pdv">Selecione um PDV</span>
+            </div>
+            <div class="fg"><label>Responsável <span class="req">*</span></label>
+              <select id="e-resp">
+                <option value="">— selecione —</option>
+                <option>THAIS</option><option>TYERRY</option><option>INDÚSTRIA</option>
+              </select>
+              <span class="field-err" id="fe-e-resp">Selecione o responsável</span>
+            </div>
+          </div>
+          <div class="grid-4">
+            <div class="fg"><label>Ciclo <span class="req">*</span></label>
+              <select id="e-ciclo">
+                <option value="">— selecione —</option>
+                <option>Ciclo 14/2026</option>
+                <option>Ciclo 13/2026</option>
+                <option>Ciclo 12/2026</option>
+                <option>Ciclo 11/2026</option><option>Ciclo 10/2026</option>
+                <option>Ciclo 09/2026</option><option>Ciclo 08/2026</option>
+                <option>Ciclo 07/2026</option>
+              </select>
+              <span class="field-err" id="fe-e-ciclo">Selecione o ciclo</span>
+            </div>
+            <div class="fg"><label>Marcas</label>
+              <div class="marcas-group" id="e-marcas-group">
+                <button type="button" class="marca-btn bot" onclick="toggleMarca(&#39;e&#39;,&#39;BOT&#39;,this)"><span class="dot"></span>BOT</button>
+                <button type="button" class="marca-btn eud" onclick="toggleMarca(&#39;e&#39;,&#39;EUD&#39;,this)"><span class="dot"></span>EUD</button>
+                <button type="button" class="marca-btn qdb" onclick="toggleMarca(&#39;e&#39;,&#39;QDB&#39;,this)"><span class="dot"></span>QDB</button>
+                <button type="button" class="marca-btn oui" onclick="toggleMarca(&#39;e&#39;,&#39;OUI&#39;,this)"><span class="dot"></span>OUI</button>
+              </div>
+              <input type="hidden" id="e-marcas" value="">
+            </div>
+            <div class="fg"><label>Código Pedido MAR <span class="req">*</span></label>
+              <input id="e-codmar" type="text" placeholder="2146902">
+              <span class="field-err" id="fe-e-codmar">Informe o código</span>
+            </div>
+            <div class="fg"><label>Tipo <span class="req">*</span></label>
+              <select id="e-tipo">
+                <option value="">— selecione —</option>
+                <option>Especial</option><option>Exclusivo (catálogos)</option>
+                <option>Lançamento</option><option>Kit</option>
+                <option>Enxoval</option>
+                <option>Pedido Indústria - Especiais</option>
+              </select>
+              <span class="field-err" id="fe-e-tipo">Selecione o tipo</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-block">
+          <div class="form-block-title"><i class="ti ti-calendar"></i>Datas &amp; Fases de Faturamento</div>
+          <div class="grid-2" style="margin-bottom:12px">
+            <div class="fg"><label>Origem</label>
+              <select id="e-origem"><option value="">—</option><option>Indústria</option><option>Franquia</option></select>
+            </div>
+            <div class="fg"><label>Data do Pedido <span class="req">*</span></label>
+              <input id="e-datped" type="date">
+              <span class="field-err" id="fe-e-datped">Informe a data</span>
+            </div>
+          </div>
+          <!-- FASES DE FATURAMENTO -->
+          <div style="background:var(--surface2);border-radius:var(--r);padding:14px 16px;margin-bottom:4px">
+            <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">
+              <span><i class="ti ti-layers-intersect" style="font-size:13px;margin-right:4px"></i>Fases de Faturamento (máx. 4)</span>
+              <span style="font-size:10px;color:var(--text3);font-weight:400">% atendimento deve totalizar 100%</span>
+            </div>
+            <div id="fases-container">
+              <!-- Fase 1 sempre visível -->
+              <div class="fase-row" id="fase-1" style="display:grid;grid-template-columns:1fr 140px 120px 32px;gap:8px;align-items:end;margin-bottom:8px">
+                <div class="fg"><label style="font-size:11px">Fase 1 — Prev. Faturamento <span class="req">*</span></label>
+                  <input type="date" id="e-fat1" oninput="calcE()">
+                  <span class="field-err" id="fe-e-fat1">Informe a data</span>
+                </div>
+                <div class="fg"><label style="font-size:11px">Condição Pgto.</label>
+                  <select id="e-cond1">
+                    <option value="">— selecione —</option>
+                    <option value="AV5">À VISTA - FRANQUIAS 5 dias</option>
+                    <option value="BO30">FINANC. PRÓPRIO - 30 dias (1,51%)</option>
+                    <option value="BO45">FINANC. PRÓPRIO - 45 dias (2,26%)</option>
+                    <option value="BO60">FINANC. PRÓPRIO - 60 dias (3,11%)</option>
+                    <option value="BO90">FINANC. PRÓPRIO - 90 dias (4,95%)</option>
+                    <option value="BB01">FINANC. PRÓPRIO - 35/55 dias (2,26%)</option>
+                    <option value="BB02" selected="">FINANC. PRÓPRIO - 30/60 dias (2,26%)</option>
+                    <option value="BB03">FINANC. PRÓPRIO - 30/60/90 dias (3,11%)</option>
+                    <option value="BB04">FINANC. PRÓPRIO - 30/60/90/120 dias (3,89%)</option>
+                    <option value="BB05">FINANC. PRÓPRIO - 30/60/90/120/150 dias (4,95%)</option>
+                    <option value="BB06">FINANC. PRÓPRIO - 30/60/90/120/150/180 dias (5,77%)</option>
+                  </select>
+                </div>
+                <div class="fg"><label style="font-size:11px">% Atendimento</label>
+                  <input type="number" id="e-pct1" value="100" min="1" max="100" step="1" oninput="calcE();updatePctTotal()" style="font-family:&#39;DM Mono&#39;,monospace">
+                </div>
+                <div></div>
+              </div>
+              <!-- Fases 2, 3, 4 ocultadas inicialmente -->
+              <div class="fase-row" id="fase-2" style="display:none;grid-template-columns:1fr 140px 120px 32px;gap:8px;align-items:end;margin-bottom:8px">
+                <div class="fg"><label style="font-size:11px">Fase 2 — Prev. Faturamento</label>
+                  <input type="date" id="e-fat2" oninput="calcE()">
+                </div>
+                <div class="fg"><label style="font-size:11px">Condição Pgto.</label>
+                  <select id="e-cond2">
+                    <option value="">— selecione —</option>
+                    <option value="AV5">À VISTA - FRANQUIAS 5 dias</option>
+                    <option value="BO30">FINANC. PRÓPRIO - 30 dias (1,51%)</option>
+                    <option value="BO45">FINANC. PRÓPRIO - 45 dias (2,26%)</option>
+                    <option value="BO60">FINANC. PRÓPRIO - 60 dias (3,11%)</option>
+                    <option value="BO90">FINANC. PRÓPRIO - 90 dias (4,95%)</option>
+                    <option value="BB01">FINANC. PRÓPRIO - 35/55 dias (2,26%)</option>
+                    <option value="BB02" selected="">FINANC. PRÓPRIO - 30/60 dias (2,26%)</option>
+                    <option value="BB03">FINANC. PRÓPRIO - 30/60/90 dias (3,11%)</option>
+                    <option value="BB04">FINANC. PRÓPRIO - 30/60/90/120 dias (3,89%)</option>
+                    <option value="BB05">FINANC. PRÓPRIO - 30/60/90/120/150 dias (4,95%)</option>
+                    <option value="BB06">FINANC. PRÓPRIO - 30/60/90/120/150/180 dias (5,77%)</option>
+                  </select>
+                </div>
+                <div class="fg"><label style="font-size:11px">% Atendimento</label>
+                  <input type="number" id="e-pct2" value="0" min="0" max="100" step="1" oninput="calcE();updatePctTotal()" style="font-family:&#39;DM Mono&#39;,monospace">
+                </div>
+                <div style="padding-bottom:2px"><button type="button" class="btn-icon" onclick="removerFase(2)" title="Remover fase"><i class="ti ti-x"></i></button></div>
+              </div>
+              <div class="fase-row" id="fase-3" style="display:none;grid-template-columns:1fr 140px 120px 32px;gap:8px;align-items:end;margin-bottom:8px">
+                <div class="fg"><label style="font-size:11px">Fase 3 — Prev. Faturamento</label>
+                  <input type="date" id="e-fat3" oninput="calcE()">
+                </div>
+                <div class="fg"><label style="font-size:11px">Condição Pgto.</label>
+                  <select id="e-cond3">
+                    <option value="">— selecione —</option>
+                    <option value="AV5">À VISTA - FRANQUIAS 5 dias</option>
+                    <option value="BO30">FINANC. PRÓPRIO - 30 dias (1,51%)</option>
+                    <option value="BO45">FINANC. PRÓPRIO - 45 dias (2,26%)</option>
+                    <option value="BO60">FINANC. PRÓPRIO - 60 dias (3,11%)</option>
+                    <option value="BO90">FINANC. PRÓPRIO - 90 dias (4,95%)</option>
+                    <option value="BB01">FINANC. PRÓPRIO - 35/55 dias (2,26%)</option>
+                    <option value="BB02" selected="">FINANC. PRÓPRIO - 30/60 dias (2,26%)</option>
+                    <option value="BB03">FINANC. PRÓPRIO - 30/60/90 dias (3,11%)</option>
+                    <option value="BB04">FINANC. PRÓPRIO - 30/60/90/120 dias (3,89%)</option>
+                    <option value="BB05">FINANC. PRÓPRIO - 30/60/90/120/150 dias (4,95%)</option>
+                    <option value="BB06">FINANC. PRÓPRIO - 30/60/90/120/150/180 dias (5,77%)</option>
+                  </select>
+                </div>
+                <div class="fg"><label style="font-size:11px">% Atendimento</label>
+                  <input type="number" id="e-pct3" value="0" min="0" max="100" step="1" oninput="calcE();updatePctTotal()" style="font-family:&#39;DM Mono&#39;,monospace">
+                </div>
+                <div style="padding-bottom:2px"><button type="button" class="btn-icon" onclick="removerFase(3)" title="Remover fase"><i class="ti ti-x"></i></button></div>
+              </div>
+              <div class="fase-row" id="fase-4" style="display:none;grid-template-columns:1fr 140px 120px 32px;gap:8px;align-items:end;margin-bottom:8px">
+                <div class="fg"><label style="font-size:11px">Fase 4 — Prev. Faturamento</label>
+                  <input type="date" id="e-fat4" oninput="calcE()">
+                </div>
+                <div class="fg"><label style="font-size:11px">Condição Pgto.</label>
+                  <select id="e-cond4">
+                    <option value="">— selecione —</option>
+                    <option value="AV5">À VISTA - FRANQUIAS 5 dias</option>
+                    <option value="BO30">FINANC. PRÓPRIO - 30 dias (1,51%)</option>
+                    <option value="BO45">FINANC. PRÓPRIO - 45 dias (2,26%)</option>
+                    <option value="BO60">FINANC. PRÓPRIO - 60 dias (3,11%)</option>
+                    <option value="BO90">FINANC. PRÓPRIO - 90 dias (4,95%)</option>
+                    <option value="BB01">FINANC. PRÓPRIO - 35/55 dias (2,26%)</option>
+                    <option value="BB02" selected="">FINANC. PRÓPRIO - 30/60 dias (2,26%)</option>
+                    <option value="BB03">FINANC. PRÓPRIO - 30/60/90 dias (3,11%)</option>
+                    <option value="BB04">FINANC. PRÓPRIO - 30/60/90/120 dias (3,89%)</option>
+                    <option value="BB05">FINANC. PRÓPRIO - 30/60/90/120/150 dias (4,95%)</option>
+                    <option value="BB06">FINANC. PRÓPRIO - 30/60/90/120/150/180 dias (5,77%)</option>
+                  </select>
+                </div>
+                <div class="fg"><label style="font-size:11px">% Atendimento</label>
+                  <input type="number" id="e-pct4" value="0" min="0" max="100" step="1" oninput="calcE();updatePctTotal()" style="font-family:&#39;DM Mono&#39;,monospace">
+                </div>
+                <div style="padding-bottom:2px"><button type="button" class="btn-icon" onclick="removerFase(4)" title="Remover fase"><i class="ti ti-x"></i></button></div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px">
+              <button type="button" class="btn btn-ghost btn-sm" id="btn-add-fase" onclick="adicionarFase()">
+                <i class="ti ti-plus"></i> Adicionar fase
+              </button>
+              <div id="pct-total-info" style="font-size:12px;font-weight:600"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-block">
+          <div class="form-block-title"><i class="ti ti-currency-dollar"></i>Valores</div>
+          <div class="grid-3">
+            <div class="fg"><label>Valor de Reposição (R$) <span class="req">*</span></label>
+              <input id="e-valrep" type="number" placeholder="0,00" step="0.01" min="0" oninput="calcE()">
+              <span class="field-err" id="fe-e-valrep">Informe o valor</span>
+            </div>
+            <div class="fg"><label>Total do Pedido (R$)</label>
+              <input id="e-totpedido" type="number" placeholder="0,00" step="0.01">
+            </div>
+            <div class="fg"><label>Observação</label><input id="e-obs" type="text" placeholder="ex: C11/26 COMPLEMENTAR OUI"></div>
+          </div>
+          <div class="calc-box">
+            <div class="calc-box-title"><i class="ti ti-calculator"></i><span id="e-calc-label">Cálculo automático</span></div>
+            <div class="calc-cols">
+              <div><div class="calc-col-label">TRF</div><div class="calc-col-val" id="e-trf">R$ 0,00</div></div>
+              <div><div class="calc-col-label">REM</div><div class="calc-col-val" id="e-rem">R$ 0,00</div></div>
+              <div><div class="calc-col-label">Total c/ taxas</div><div class="calc-col-val" id="e-tot">R$ 0,00</div></div>
+              <div><div class="calc-col-label">Disponível (Meta − Gasto)</div><div class="calc-col-val ok" id="e-saldo-disp">—</div></div>
+            </div>
+            <div class="saldo-alert" id="e-saldo-alert"></div>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-ghost" onclick="limpar(&#39;e&#39;)"><i class="ti ti-refresh"></i>Limpar</button>
+          <button class="btn btn-primary" onclick="salvarE()"><i class="ti ti-device-floppy"></i>Salvar Pedido Especial</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-hdr">
+          <div class="sec-title">Pedidos Especiais</div>
+          <span class="pill" id="cnt-e">0</span>
+        </div>
+        <div class="filters">
+          <select id="ef-ciclo" onchange="rendE()"><option value="">Todos ciclos</option>
+            <option>Ciclo 14/2026</option>
+            <option>Ciclo 13/2026</option>
+            <option>Ciclo 12/2026</option>
+            <option>Ciclo 11/2026</option><option>Ciclo 10/2026</option><option>Ciclo 09/2026</option>
+          </select>
+          <select id="ef-tipo" onchange="rendE()"><option value="">Todos tipos</option>
+            <option>Especial</option><option>Exclusivo (catálogos)</option><option>Lançamento</option><option>Kit</option>
+          </select>
+          <select id="ef-resp" onchange="rendE()"><option value="">Todos resp.</option><option>THAIS</option><option>TYERRY</option><option>INDÚSTRIA</option></select>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>PDV</th><th>Resp.</th><th>Ciclo</th><th>Marcas</th><th>Tipo</th><th>Origem</th><th class="tr">Val. Rep.</th><th class="tr">TRF</th><th class="tr">REM</th><th>Prev. Fat.</th><th>Obs.</th><th></th></tr></thead>
+            <tbody id="tbl-esp"><tr><td colspan="12"><div class="empty"><i class="ti ti-star-off"></i><p>Nenhum pedido encontrado.</p></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ METAS ══ -->
+    <div id="view-metas" class="view">
+      <div class="metrics-row" style="grid-template-columns:repeat(3,1fr)">
+        <div class="metric green">
+          <div class="metric-icon"><i class="ti ti-target"></i></div>
+          <div class="metric-label">Meta / Teto Total</div>
+          <div class="metric-value sm" id="meta-total-val">R$ 0,00</div>
+          <div class="metric-delta">orçamento máximo de compra</div>
+        </div>
+        <div class="metric gold">
+          <div class="metric-icon"><i class="ti ti-shopping-cart"></i></div>
+          <div class="metric-label">Já Gasto</div>
+          <div class="metric-value sm" id="meta-compra-val">R$ 0,00</div>
+          <div class="metric-delta">comprometido até agora</div>
+        </div>
+        <div class="metric blue">
+          <div class="metric-icon"><i class="ti ti-cash"></i></div>
+          <div class="metric-label">Disponível</div>
+          <div class="metric-value sm" id="meta-saldo-val">R$ 0,00</div>
+          <div class="metric-delta">Meta − Gasto · pode ainda comprar</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-hdr">
+          <div class="sec-title">Metas por PDV — editável</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span id="budget-rule-badge" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--accent-light);color:var(--accent)">Carregando regra...</span>
+            <button class="btn btn-ghost btn-sm" onclick="resetMetas()"><i class="ti ti-refresh"></i>Restaurar padrão</button>
+            <button class="btn btn-primary btn-sm" onclick="salvarMetas()"><i class="ti ti-device-floppy"></i>Salvar metas</button>
+          </div>
+        </div>
+        <div class="meta-row hdr">
+          <div>PDV</div><div>Meta / Teto (R$)</div><div>Já Gasto (R$)</div><div id="meta-hdr-disp">Disponível (R$)</div><div>Usado %</div>
+        </div>
+        <div id="metas-rows"></div>
+        <div class="meta-row total-row" style="display:grid;grid-template-columns:1fr 110px 110px 110px 90px;gap:0;padding:10px 14px;background:var(--surface2);border-top:2px solid var(--border)">
+          <div><strong>TOTAL</strong></div>
+          <div class="mono tr" id="meta-tot-mes" title="Soma das metas (teto)">—</div>
+          <div class="mono tr" id="meta-tot-comp" title="Total já gasto">—</div>
+          <div class="mono tr" id="meta-tot-saldo" title="Total disponível = Meta − Gasto">—</div>
+          <div class="mono" id="meta-tot-pct">—</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Meta vs realizado por PDV</div>
+        <div style="position:relative;height:280px"><canvas id="ch-metas" role="img" aria-label="Meta vs realizado">Metas.</canvas></div>
+      </div>
+    </div>
+
+    <!-- ══ HISTÓRICO ══ -->
+    <div id="view-historico" class="view">
+      <div class="card">
+        <div class="sec-hdr">
+          <div class="sec-title">Histórico Consolidado</div>
+          <button class="btn btn-ghost btn-sm" onclick="exportCSV()"><i class="ti ti-download"></i>CSV</button>
+        </div>
+        <div class="filters">
+          <select id="hf-pdv" onchange="rendH()"><option value="">Todos PDVs</option>
+            <option>18501 - MATEUS BORDIN &amp; CIA LTDA / VD</option>
+            <option>23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB</option>
+            <option>4605 - ARTESIL PRODUTOS NATURAIS LTDA / CENTRO</option>
+            <option>13136 - ROBERTA BORDIN / PÁTIO</option>
+            <option>12540 - MATEUS BORDIN - ME / BRASÃO</option>
+            <option>21016 - ROBERTA BORDIN &amp; CIA LTDA / EFAPI</option>
+            <option>12716 - MATEUS BORDIN - ME / CENTER</option>
+            <option>12721 - MATEUS BORDIN - ME / ITÁLIA</option>
+            <option>8348 - ARTESIL PERFUMES E COSMETICOS / XAXIM</option>
+            <option>12354 - MATEUS BORDIN - ME / ALFA</option>
+            <option>23857 - VICTORIA PERFUMES E COSMETICOS LTDA / PULSE</option>
+          </select>
+          <select id="hf-tipo" onchange="rendH()"><option value="">Todos tipos</option><option>Semanal</option><option>Especial</option></select>
+          <select id="hf-resp" onchange="rendH()"><option value="">Todos resp.</option><option>THAIS</option><option>TYERRY</option></select>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>PDV</th><th>Resp.</th><th>Tipo</th><th>Referência</th><th>Cód. MAR</th><th class="tr">Val. Rep.</th><th class="tr">TRF</th><th class="tr">REM</th><th>Prev. Fat.</th><th>Obs.</th></tr></thead>
+            <tbody id="tbl-hist"><tr><td colspan="10"><div class="empty"><i class="ti ti-history"></i><p>Nenhum registro.</p></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Evolução de valor de reposição por período</div>
+        <div style="position:relative;height:220px"><canvas id="ch-evol" role="img" aria-label="Evolução faturamento">Evolução.</canvas></div>
+      </div>
+    </div>
+
+    <!-- ══ CONTAS A RECEBER ══ -->
+    <div id="view-previsao" class="view">
+      <div class="metrics-row" style="grid-template-columns:repeat(3,1fr)">
+        <div class="metric green">
+          <div class="metric-icon"><i class="ti ti-calendar-due"></i></div>
+          <div class="metric-label">Total Boletos Previstos</div>
+          <div class="metric-value sm" id="prev-total">R$ 0,00</div>
+          <div class="metric-delta">valor + juros de todos os boletos</div>
+        </div>
+        <div class="metric gold">
+          <div class="metric-icon"><i class="ti ti-calendar-week"></i></div>
+          <div class="metric-label">Próximos 30 dias</div>
+          <div class="metric-value sm" id="prev-30">R$ 0,00</div>
+          <div class="metric-delta">previsão de faturamento</div>
+        </div>
+        <div class="metric blue">
+          <div class="metric-icon"><i class="ti ti-calendar-month"></i></div>
+          <div class="metric-label">Próximos 60 dias</div>
+          <div class="metric-value sm" id="prev-60">R$ 0,00</div>
+          <div class="metric-delta">previsão de faturamento</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">Linha do tempo — previsão de faturamento</div>
+        <div style="position:relative;height:220px"><canvas id="ch-prev" role="img" aria-label="Previsão de faturamento por data">Previsão.</canvas></div>
+      </div>
+
+      <div class="card">
+        <div class="sec-hdr">
+          <div class="sec-title">Calendário de recebimentos previstos</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <div style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2)"><span style="width:10px;height:10px;background:#2D4A3E;border-radius:2px;display:inline-block"></span>Semanal</div>
+            <div style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2)"><span style="width:10px;height:10px;background:#8B6914;border-radius:2px;display:inline-block"></span>Especial</div>
+          </div>
+        </div>
+        <div class="filters">
+          <select id="pf-tipo" onchange="rendPrev()"><option value="">Todos</option><option>Semanal</option><option>Especial</option></select>
+          <select id="pf-pdv" onchange="rendPrev()"><option value="">Todos PDVs</option>
+            <option>18501 - MATEUS BORDIN &amp; CIA LTDA / VD</option>
+            <option>23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB</option>
+            <option>4605 - ARTESIL PRODUTOS NATURAIS LTDA / CENTRO</option>
+            <option>13136 - ROBERTA BORDIN / PÁTIO</option>
+            <option>12540 - MATEUS BORDIN - ME / BRASÃO</option>
+            <option>21016 - ROBERTA BORDIN &amp; CIA LTDA / EFAPI</option>
+            <option>12716 - MATEUS BORDIN - ME / CENTER</option>
+            <option>12721 - MATEUS BORDIN - ME / ITÁLIA</option>
+            <option>8348 - ARTESIL PERFUMES E COSMETICOS / XAXIM</option>
+            <option>12354 - MATEUS BORDIN - ME / ALFA</option>
+            <option>23857 - VICTORIA PERFUMES E COSMETICOS LTDA / PULSE</option>
+          </select>
+          <select id="pf-resp" onchange="rendPrev()"><option value="">Todos resp.</option><option>THAIS</option><option>TYERRY</option><option>INDÚSTRIA</option></select>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Vencimento</th><th>PDV</th><th>Resp.</th><th>Tipo / Fase</th>
+                <th>Referência</th><th>Marcas</th>
+                <th class="tr">Val. Reposição</th>
+                <th class="tr">TRF</th>
+                <th class="tr">REM</th>
+                <th class="tr">Total c/ taxas</th>
+                <th>Prazo</th><th>Obs.</th>
+              </tr>
+            </thead>
+            <tbody id="tbl-prev">
+              <tr><td colspan="12"><div class="empty"><i class="ti ti-calendar-off"></i><p>Nenhum pedido com previsão de faturamento cadastrado.</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="prev-totais" style="display:none;border-top:2px solid var(--border);padding:12px 14px;background:var(--surface2);border-radius:0 0 var(--r-lg) var(--r-lg)">
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+            <div><div style="font-size:11px;color:var(--text3);margin-bottom:3px">Registros</div><div style="font-size:16px;font-weight:600" id="prev-tot-n">0</div></div>
+            <div><div style="font-size:11px;color:var(--text3);margin-bottom:3px">Total Reposição</div><div style="font-size:16px;font-weight:600;font-family:&#39;DM Mono&#39;,monospace" id="prev-tot-rep">R$ 0,00</div></div>
+            <div><div style="font-size:11px;color:var(--text3);margin-bottom:3px">Total TRF</div><div style="font-size:16px;font-weight:600;font-family:&#39;DM Mono&#39;,monospace" id="prev-tot-trf">R$ 0,00</div></div>
+            <div><div style="font-size:11px;color:var(--text3);margin-bottom:3px">Total c/ Taxas</div><div style="font-size:16px;font-weight:600;color:var(--accent);font-family:&#39;DM Mono&#39;,monospace" id="prev-tot-final">R$ 0,00</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ RELATÓRIO / PDF ══ -->
+    <div id="view-relatorio" class="view">
+      <div class="print-header">
+        <h1>Artesil — Relatório de Faturamento</h1>
+        <p id="rel-data-print">Gerado em —</p>
+      </div>
+
+      <div class="card no-print" style="margin-bottom:16px">
+        <div class="sec-hdr">
+          <div class="sec-title">Configurar relatório</div>
+        </div>
+        <div class="grid-3" style="margin-bottom:12px">
+          <div class="fg"><label>Tipo de relatório</label>
+            <select id="rel-tipo">
+              <option value="todos">Todos os pedidos</option>
+              <option value="semanal">Somente semanais</option>
+              <option value="especial">Somente especiais</option>
+              <option value="pdv">Por PDV</option>
+              <option value="responsavel">Por Responsável</option>
+            </select>
+          </div>
+          <div class="fg"><label>Responsável</label>
+            <select id="rel-resp"><option value="">Todos</option><option>THAIS</option><option>TYERRY</option></select>
+          </div>
+          <div class="fg"><label>Período</label>
+            <input type="text" id="rel-periodo" placeholder="ex: Maio/2026">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="gerarRel()"><i class="ti ti-eye"></i>Visualizar</button>
+          <button class="btn btn-gold" onclick="window.print()"><i class="ti ti-printer"></i>Imprimir / Salvar PDF</button>
+        </div>
+      </div>
+
+      <div id="rel-content">
+        <div class="empty" style="padding:48px"><i class="ti ti-file-description"></i><p>Configure e clique em "Visualizar" para gerar o relatório.</p></div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
+</div><!-- /app -->
+
+<div id="toasts"></div>
+
+<script>
+/* ─────────── DB ─────────── */
+const KEY = 'artesil_v2';
+let db = {semanais:[],especiais:[],ciclos:[],metas:{}};
+function loadDB(){try{const s=localStorage.getItem(KEY);if(s)db=JSON.parse(s)}catch(e){}}
+function saveDB(){try{localStorage.setItem(KEY,JSON.stringify(db))}catch(e){}}
+loadDB();
+
+/* ─────────── METAS PADRÃO ─────────── */
+const METAS_DEFAULT = {
+  // Metas mês 07/2026 — atualizado em 24/07/2026
+  '18501 - MATEUS BORDIN & CIA LTDA / VD':               {meta:3700000, saldo:1315771.08},
+  '23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB':   {meta:3700000, saldo:0},
+  '4605 - ARTESIL PRODUTOS NATURAIS LTDA / CENTRO':      {meta:500000,  saldo:116857.43},
+  '13136 - ROBERTA BORDIN / PÁTIO':                      {meta:480000,  saldo:146835.07},
+  '12540 - MATEUS BORDIN - ME / BRASÃO':                 {meta:245000,  saldo:27962.00},
+  '21016 - ROBERTA BORDIN & CIA LTDA / EFAPI':           {meta:245000,  saldo:67740.38},
+  '12716 - MATEUS BORDIN - ME / CENTER':                 {meta:245000,  saldo:72763.69},
+  '12721 - MATEUS BORDIN - ME / ITÁLIA':                 {meta:185000,  saldo:49381.66},
+  '8348 - ARTESIL PERFUMES E COSMETICOS / XAXIM':        {meta:145000,  saldo:39881.62},
+  '12354 - MATEUS BORDIN - ME / ALFA':                   {meta:215000,  saldo:77217.60},
+  '23857 - VICTORIA PERFUMES E COSMETICOS LTDA / PULSE': {meta:100000,  saldo:5303.48},
+};
+const PDV_SALDOS_BASE = {
+  // Saldos de compra disponíveis — mês 07/2026
+  '18501 - MATEUS BORDIN & CIA LTDA / VD':               1315771.08,
+  '23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB':   0,
+  '4605 - ARTESIL PRODUTOS NATURAIS LTDA / CENTRO':      116857.43,
+  '13136 - ROBERTA BORDIN / PÁTIO':                      146835.07,
+  '12540 - MATEUS BORDIN - ME / BRASÃO':                 27962.00,
+  '21016 - ROBERTA BORDIN & CIA LTDA / EFAPI':           67740.38,
+  '12716 - MATEUS BORDIN - ME / CENTER':                 72763.69,
+  '12721 - MATEUS BORDIN - ME / ITÁLIA':                 49381.66,
+  '8348 - ARTESIL PERFUMES E COSMETICOS / XAXIM':        39881.62,
+  '12354 - MATEUS BORDIN - ME / ALFA':                   77217.60,
+  '23857 - VICTORIA PERFUMES E COSMETICOS LTDA / PULSE': 5303.48,
+};
+const PDV_RESP = {
+  '18501 - MATEUS BORDIN & CIA LTDA / VD':'THAIS',
+  '23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB':'THAIS',
+  '4605 - ARTESIL PRODUTOS NATURAIS LTDA / CENTRO':'TYERRY',
+  '13136 - ROBERTA BORDIN / PÁTIO':'THAIS',
+  '12540 - MATEUS BORDIN - ME / BRASÃO':'THAIS',
+  '21016 - ROBERTA BORDIN & CIA LTDA / EFAPI':'TYERRY',
+  '12716 - MATEUS BORDIN - ME / CENTER':'TYERRY',
+  '12721 - MATEUS BORDIN - ME / ITÁLIA':'TYERRY',
+  '8348 - ARTESIL PERFUMES E COSMETICOS / XAXIM':'TYERRY',
+  '12354 - MATEUS BORDIN - ME / ALFA':'THAIS',
+  '23857 - VICTORIA PERFUMES E COSMETICOS LTDA / PULSE':'THAIS',
+};
+if(!Object.keys(db.metas).length) db.metas = JSON.parse(JSON.stringify(METAS_DEFAULT));
+
+/* ─────────── UTILS ─────────── */
+const R = v=>'R$ '+parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const Rn = v=>parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const short = s=>(s||'').split(' / ').pop()||(s||'').substring(0,14);
+const badge = (t,cls)=>`<span class="badge ${cls}">${t}</span>`;
+const respBadge = r=>r?badge(r,r==='THAIS'?'b-thais':r==='TYERRY'?'b-tyerry':'b-industria'):'—';
+const typeBadge = t=>({Semanal:'b-sem',Especial:'b-esp','Exclusivo (catálogos)':'b-esp',Lançamento:'b-lan',Kit:'b-kit'}[t]||'b-lan');
+
+function toast(msg,type='ok'){
+  const c=document.getElementById('toasts');
+  const el=document.createElement('div');el.className=`toast ${type}`;
+  const ico={ok:'circle-check',err:'alert-circle',warn:'alert-triangle'}[type]||'info-circle';
+  el.innerHTML=`<i class="ti ti-${ico}"></i>${msg}`;
+  c.appendChild(el);setTimeout(()=>el.remove(),3200);
+}
+
+function updateSBCount(){
+  const n=db.semanais.length+db.especiais.length;
+  document.getElementById('sb-count').textContent=n+' registro'+(n!==1?'s':'')+' salvos';
+}
+
+/* ─────────── NAVIGATION ─────────── */
+const PAGE_META = {
+  dashboard:['Dashboard','Visão geral · Artesil'],
+  ciclos:['Ciclos & Previsão','Controle de ciclos por período'],
+  semanal:['Pedido Semanal','Cadastro de pedidos semanais'],
+  especial:['Pedido Especial','Cadastro de pedidos especiais'],
+  metas:['Metas & Saldos','Acompanhamento financeiro por PDV'],
+  historico:['Histórico','Registros consolidados'],
+  previsao:['Contas a Receber','Previsão de faturamento por data'],
+  relatorio:['Relatório / PDF','Geração e impressão de relatórios'],
+};
+
+function go(id,btn){
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  if(btn)btn.classList.add('active');
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('view-'+id).classList.add('active');
+  const m=PAGE_META[id]||['—','—'];
+  document.getElementById('tb-title').textContent=m[0];
+  document.getElementById('tb-sub').textContent=m[1];
+  document.getElementById('sidebar').classList.remove('open');
+  if(id==='dashboard')renderDash();
+  if(id==='historico'){rendH();renderEvol();}
+  if(id==='metas')renderMetas();
+  if(id==='ciclos')renderCiclos();
+  if(id==='previsao')rendPrev();
+}
+
+/* ─────────── CALCS ─────────── */
+/* ─────────── REGRA DE BUDGET POR PERÍODO ─────────── */
+// Até mai/2026: budget = 100% da meta (sem corte formal)
+// A partir de jun/2026: budget = 90% da meta
+function getBudgetPct(){
+  const now = new Date();
+  const ano  = now.getFullYear();
+  const mes  = now.getMonth() + 1; // 1-12
+  if(ano > 2026) return 0.90;
+  if(ano === 2026 && mes >= 6) return 0.90;
+  return 1.00;
+}
+function getBudget(meta){
+  return meta * getBudgetPct();
+}
+function getBudgetLabel(){
+  return getBudgetPct() === 0.90 ? '90% da meta' : '100% da meta';
+}
+function getDisponivel(m){
+  return getBudget(m.meta) - m.saldo;
+}
+// VD = hub distribuidor: TRF 45% + REM 6%
+// Lojas: TRF 5% + REM 6%
+const PDV_VD = ['18501 - MATEUS BORDIN & CIA LTDA / VD','23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB'];
+function getTaxas(pdv){
+  const isVD = PDV_VD.some(v=>pdv&&pdv.includes(v.split(' / ')[0]));
+  return isVD ? {trf:0.45,rem:0.06,label:'VD (45%+6%)'} : {trf:0.05,rem:0.06,label:'Lojas (5%+6%)'};
+}
+function calcTaxaLabel(prefix){
+  const pdv=document.getElementById(prefix+'-pdv').value;
+  const t=getTaxas(pdv);
+  const box=document.getElementById(prefix+'-calc-label');
+  if(box) box.textContent='Cálculo automático · '+t.label;
+}
+function getSaldoPDV(pdv){
+  const m=db.metas[pdv];
+  if(!m)return null;
+  return getDisponivel(m);
+}
+
+function renderSaldoAlert(prefix, totalPedido){
+  const pdv=document.getElementById(prefix+'-pdv').value;
+  const saldoDisp=document.getElementById(prefix+'-saldo-disp');
+  const alertEl=document.getElementById(prefix+'-saldo-alert');
+  if(!pdv){saldoDisp.textContent='—';saldoDisp.className='calc-col-val ok';alertEl.className='saldo-alert';return;}
+
+  // VD e HUB usam pool compartilhado
+  const isVDHUB = ['18501 - MATEUS BORDIN & CIA LTDA / VD','23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB'].includes(pdv);
+  const meta  = isVDHUB ? getMetaVDHUB() : (db.metas[pdv]?.meta||0);
+  const gasto = isVDHUB ? getGastoVDHUB() : (db.metas[pdv]?.saldo||0);
+  const budget    = getBudget(meta);
+  const disponivel= budget - gasto;
+  const aposEste  = disponivel - totalPedido;
+  const pctLabel  = getBudgetLabel()+(isVDHUB?' · pool VD+HUB':'');
+
+  saldoDisp.textContent = R(disponivel);
+
+  if(aposEste < 0){
+    saldoDisp.className='calc-col-val over';
+    alertEl.className='saldo-alert over';
+    alertEl.innerHTML=`<i class="ti ti-alert-triangle"></i> Orçamento insuficiente! (Budget ${pctLabel}) — excede em ${R(Math.abs(aposEste))}`;
+  } else if(aposEste < budget * 0.10){
+    saldoDisp.className='calc-col-val warn';
+    alertEl.className='saldo-alert warn';
+    alertEl.innerHTML=`<i class="ti ti-alert-circle"></i> Atenção: restará apenas ${R(aposEste)} do orçamento após este pedido (Budget ${pctLabel})`;
+  } else {
+    saldoDisp.className='calc-col-val ok';
+    alertEl.className='saldo-alert ok';
+    alertEl.innerHTML=`<i class="ti ti-circle-check"></i> Dentro do orçamento (Budget ${pctLabel}) · restará ${R(aposEste)} após este pedido`;
+  }
+}
+
+function calcS(){
+  const v=parseFloat(document.getElementById('s-valrep').value)||0;
+  const pdv=document.getElementById('s-pdv').value;
+  const t=getTaxas(pdv);
+  const trf=v*t.trf, rem=v*t.rem, total=v+trf+rem;
+  document.getElementById('s-trf').textContent=R(trf);
+  document.getElementById('s-rem').textContent=R(rem);
+  document.getElementById('s-tot').textContent=R(total);
+  document.getElementById('s-calc-label').textContent='Cálculo automático · '+t.label;
+  renderSaldoAlert('s', total);
+}
+function calcE(){
+  const v=parseFloat(document.getElementById('e-valrep').value)||0;
+  const pdv=document.getElementById('e-pdv').value;
+  const t=getTaxas(pdv);
+  const trf=v*t.trf, rem=v*t.rem, total=v+trf+rem;
+  document.getElementById('e-trf').textContent=R(trf);
+  document.getElementById('e-rem').textContent=R(rem);
+  document.getElementById('e-tot').textContent=R(total);
+  document.getElementById('e-calc-label').textContent='Cálculo automático · '+t.label;
+  renderSaldoAlert('e', total);
+}
+
+/* ─────────── VALIDATION ─────────── */
+function val(rules){
+  let ok=true;
+  rules.forEach(([id,eid,fn])=>{
+    const el=document.getElementById(id);
+    const err=document.getElementById(eid);
+    const v=fn(el.value);
+    el.classList.toggle('err',!v);
+    if(err)err.classList.toggle('show',!v);
+    if(!v)ok=false;
+  });
+  return ok;
+}
+
+/* ─────────── SAVE SEMANAL ─────────── */
+function salvarS(){
+  if(!val([
+    ['s-pdv','fe-s-pdv',v=>v!==''],
+    ['s-resp','fe-s-resp',v=>v!==''],
+    ['s-semana','fe-s-semana',v=>v.trim()!==''],
+    ['s-datped','fe-s-datped',v=>v!==''],
+    ['s-prevfat','fe-s-prevfat',v=>v!==''],
+    ['s-valrep','fe-s-valrep',v=>v!==''&&parseFloat(v)>=0],
+  ])){toast('Preencha os campos obrigatórios','err');return;}
+  const v=parseFloat(document.getElementById('s-valrep').value);
+  const t=getTaxas(document.getElementById('s-pdv').value);
+  db.semanais.push({
+    id:Date.now(),
+    pdv:document.getElementById('s-pdv').value,
+    resp:document.getElementById('s-resp').value,
+    semana:document.getElementById('s-semana').value,
+    marcas:document.getElementById('s-marcas').value||'—',
+    tipo:document.getElementById('s-tipo').value,
+    codmar:document.getElementById('s-codmar').value||'—',
+    datped:document.getElementById('s-datped').value,
+    prevfat:document.getElementById('s-prevfat').value,
+    prazo:document.getElementById('s-prazo').value,
+    valrep:v,saldo:0,
+    trf:v*t.trf,rem:v*t.rem,taxaLabel:t.label,obs:document.getElementById('s-obs').value,
+  });
+  saveDB();limpar('s');rendS();renderDash();updateSBCount();
+  syncToCloud();
+  toast('Pedido semanal salvo!');
+}
+
+/* ─────────── SAVE ESPECIAL ─────────── */
+function salvarE(){
+  if(!val([
+    ['e-pdv','fe-e-pdv',v=>v!==''],
+    ['e-resp','fe-e-resp',v=>v!==''],
+    ['e-ciclo','fe-e-ciclo',v=>v!==''],
+    ['e-codmar','fe-e-codmar',v=>v.trim()!==''],
+    ['e-tipo','fe-e-tipo',v=>v!==''],
+    ['e-datped','fe-e-datped',v=>v!==''],
+    ['e-fat1','fe-e-fat1',v=>v!==''],
+    ['e-valrep','fe-e-valrep',v=>v!==''&&parseFloat(v)>=0],
+  ])){toast('Preencha os campos obrigatórios','err');return;}
+  const v=parseFloat(document.getElementById('e-valrep').value);
+  const t=getTaxas(document.getElementById('e-pdv').value);
+  // Coletar fases
+  const fases=[];
+  let totalPct=0;
+  for(let f=1;f<=4;f++){
+    const row=document.getElementById('fase-'+f);
+    if(!row||row.style.display==='none')continue;
+    const fatEl=document.getElementById('e-fat'+f);
+    const pctEl=document.getElementById('e-pct'+f);
+    const condEl=document.getElementById('e-cond'+f);
+    if(!fatEl||!fatEl.value)continue;
+    const pct=parseFloat(pctEl.value)||0;
+    totalPct+=pct;
+    const valF = v*pct/100;
+    const boletos = gerarBoletos(fatEl.value, condEl.value, valF, t.trf);
+    fases.push({fase:f,prevfat:fatEl.value,cond:condEl.value,pct,
+      valFase:valF, trfFase:valF*t.trf, remFase:valF*t.rem,
+      boletos});
+  }
+  if(fases.length===0){toast('Informe ao menos a data da Fase 1','err');return;}
+  // prevfat = primeira fase para compatibilidade
+  const prevfatPrincipal=fases[0].prevfat;
+  db.especiais.push({
+    id:Date.now(),
+    pdv:document.getElementById('e-pdv').value,
+    resp:document.getElementById('e-resp').value,
+    ciclo:document.getElementById('e-ciclo').value,
+    marcas:document.getElementById('e-marcas').value||'—',
+    codmar:document.getElementById('e-codmar').value,
+    tipo:document.getElementById('e-tipo').value,
+    origem:document.getElementById('e-origem').value||'—',
+    datped:document.getElementById('e-datped').value,
+    prevfat:prevfatPrincipal,
+    prazo:fases[0].cond,
+    fases,
+    valrep:v,totpedido:parseFloat(document.getElementById('e-totpedido').value)||v,
+    trf:v*t.trf,rem:v*t.rem,taxaLabel:t.label,obs:document.getElementById('e-obs').value,
+  });
+  saveDB();limpar('e');rendE();renderDash();updateSBCount();
+  syncToCloud();
+  toast('Pedido especial salvo!');
+}
+
+/* ─────────── LIMPAR ─────────── */
+function limpar(p){
+  const fs=p==='s'
+    ?['s-pdv','s-resp','s-semana','s-marcas','s-tipo','s-codmar','s-datped','s-prevfat','s-prazo','s-valrep','s-obs']
+    :['e-pdv','e-resp','e-ciclo','e-marcas','e-codmar','e-tipo','e-origem','e-datped','e-prevfat','e-prazo','e-valrep','e-totpedido','e-obs'];
+  fs.forEach(id=>{const el=document.getElementById(id);if(!el)return;if(el.tagName==='SELECT')el.selectedIndex=0;else el.value='';el.classList.remove('err');});
+  document.querySelectorAll('.field-err.show').forEach(e=>e.classList.remove('show'));
+  if(p==='s'){
+    document.getElementById('s-semana').value='16/07 a 22/07/2026';
+    ['s-trf','s-rem','s-tot'].forEach(id=>document.getElementById(id).textContent='R$ 0,00');
+    document.getElementById('s-saldo-disp').textContent='—';
+    document.getElementById('s-saldo-disp').className='calc-col-val ok';
+    document.getElementById('s-saldo-alert').className='saldo-alert';
+    resetMarcas('s');
+  }
+  if(p==='e'){
+    ['e-trf','e-rem','e-tot'].forEach(id=>document.getElementById(id).textContent='R$ 0,00');
+    document.getElementById('e-saldo-disp').textContent='—';
+    document.getElementById('e-saldo-disp').className='calc-col-val ok';
+    document.getElementById('e-saldo-alert').className='saldo-alert';
+    resetMarcas('e');
+    // Reset fases
+    for(let f=1;f<=4;f++){
+      const fatEl=document.getElementById('e-fat'+f);
+      const pctEl=document.getElementById('e-pct'+f);
+      const condEl=document.getElementById('e-cond'+f);
+      if(fatEl)fatEl.value='';
+      if(pctEl)pctEl.value=f===1?'100':'0';
+      if(condEl)condEl.selectedIndex=0;
+      if(f>1){const row=document.getElementById('fase-'+f);if(row)row.style.display='none';}
+    }
+    document.getElementById('btn-add-fase').style.display='';
+    updatePctTotal();
+  }
+}
+
+/* ─────────── DELETE ─────────── */
+function del(type,id){
+  const table = type==='s' ? 'semanais' : 'especiais';
+  if(type==='s')db.semanais=db.semanais.filter(p=>p.id!==id);
+  else db.especiais=db.especiais.filter(p=>p.id!==id);
+  saveDB();rendS();rendE();renderDash();updateSBCount();
+  deleteFromCloud(table, id);
+  toast('Registro removido','warn');
+}
+
+/* ─────────── RENDER SEMANAIS ─────────── */
+function rendS(){
+  const pdv=document.getElementById('sf-pdv').value;
+  const resp=document.getElementById('sf-resp').value;
+  const sem=(document.getElementById('sf-sem').value||'').toLowerCase();
+  let list=db.semanais.filter(p=>(!pdv||p.pdv===pdv)&&(!resp||p.resp===resp)&&(!sem||p.semana.toLowerCase().includes(sem)));
+  document.getElementById('cnt-s').textContent=list.length;
+  const tbody=document.getElementById('tbl-sem');
+  if(!list.length){tbody.innerHTML='<tr><td colspan="12"><div class="empty"><i class="ti ti-inbox"></i><p>Nenhum pedido encontrado.</p></div></td></tr>';return;}
+  tbody.innerHTML=list.map(p=>`<tr>
+    <td style="white-space:nowrap;font-size:12px">${short(p.pdv)}</td>
+    <td>${respBadge(p.resp)}</td>
+    <td style="font-size:12px">${p.semana}</td>
+    <td>${p.marcas}</td>
+    <td class="mono">${p.codmar}</td>
+    <td class="tr mono">${R(p.valrep)}</td>
+    <td class="tr mono ${p.saldo<0?'neg':'pos'}">${p.saldo?R(p.saldo):'—'}</td>
+    <td class="tr mono">${R(p.trf)}</td>
+    <td class="tr mono">${R(p.rem)}</td>
+    <td style="font-size:12px">${p.prevfat||'—'}</td>
+    <td style="font-size:12px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.obs}">${p.obs||'—'}</td>
+    <td><button class="btn-icon" onclick="del('s',${p.id})" title="Remover"><i class="ti ti-trash"></i></button></td>
+  </tr>`).join('');
+}
+
+/* ─────────── RENDER ESPECIAIS ─────────── */
+function rendE(){
+  const ciclo=document.getElementById('ef-ciclo').value;
+  const tipo=document.getElementById('ef-tipo').value;
+  const resp=document.getElementById('ef-resp').value;
+  let list=db.especiais.filter(p=>(!ciclo||p.ciclo===ciclo)&&(!tipo||p.tipo===tipo)&&(!resp||p.resp===resp));
+  document.getElementById('cnt-e').textContent=list.length;
+  const tbody=document.getElementById('tbl-esp');
+  if(!list.length){tbody.innerHTML='<tr><td colspan="12"><div class="empty"><i class="ti ti-star-off"></i><p>Nenhum pedido encontrado.</p></div></td></tr>';return;}
+  tbody.innerHTML=list.map(p=>{
+    const fasesHtml=p.fases&&p.fases.length>1
+      ?'<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">'+
+        p.fases.map(f=>`<span style="font-size:10px;background:var(--gold-light);color:var(--gold);padding:1px 6px;border-radius:99px;font-weight:600">F${f.fase} ${f.pct}% · ${f.prevfat} · ${f.cond}</span>`).join('')+
+        '</div>':p.prevfat||'—';
+    return `<tr>
+    <td style="white-space:nowrap;font-size:12px">${short(p.pdv)}</td>
+    <td>${respBadge(p.resp)}</td>
+    <td><span class="badge b-esp" style="font-size:10px">${p.ciclo}</span></td>
+    <td>${p.marcas}</td>
+    <td>${badge(p.tipo,typeBadge(p.tipo))}</td>
+    <td>${p.origem}</td>
+    <td class="tr mono">${R(p.valrep)}</td>
+    <td class="tr mono">${R(p.trf)}</td>
+    <td class="tr mono">${R(p.rem)}</td>
+    <td style="font-size:12px">${fasesHtml}</td>
+    <td style="font-size:12px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.obs}">${p.obs||'—'}</td>
+    <td><button class="btn-icon" onclick="del('e',${p.id})" title="Remover"><i class="ti ti-trash"></i></button></td>
+  </tr>`;}).join('');
+}
+
+/* ─────────── RENDER HISTÓRICO ─────────── */
+function rendH(){
+  const pdv=document.getElementById('hf-pdv').value;
+  const tipo=document.getElementById('hf-tipo').value;
+  const resp=document.getElementById('hf-resp').value;
+  const all=[
+    ...db.semanais.map(p=>({...p,tg:'Semanal',ref:p.semana})),
+    ...db.especiais.map(p=>({...p,tg:'Especial',ref:p.ciclo})),
+  ].filter(p=>(!pdv||p.pdv===pdv)&&(!tipo||p.tg===tipo)&&(!resp||p.resp===resp));
+  const tbody=document.getElementById('tbl-hist');
+  if(!all.length){tbody.innerHTML='<tr><td colspan="10"><div class="empty"><i class="ti ti-history"></i><p>Nenhum registro.</p></div></td></tr>';return;}
+  tbody.innerHTML=all.map(p=>`<tr>
+    <td style="font-size:12px;white-space:nowrap">${short(p.pdv)}</td>
+    <td>${respBadge(p.resp)}</td>
+    <td>${badge(p.tg,p.tg==='Semanal'?'b-sem':'b-esp')}</td>
+    <td style="font-size:12px">${p.ref}</td>
+    <td class="mono">${p.codmar||'—'}</td>
+    <td class="tr mono">${R(p.valrep)}</td>
+    <td class="tr mono">${R(p.trf)}</td>
+    <td class="tr mono">${R(p.rem)}</td>
+    <td style="font-size:12px">${p.prevfat||'—'}</td>
+    <td style="font-size:12px">${p.obs||'—'}</td>
+  </tr>`).join('');
+}
+
+/* ─────────── DASHBOARD ─────────── */
+let chPDV,chTipo;
+function renderDash(){
+  const entries=Object.entries(PDV_SALDOS_BASE);
+  const tot=entries.reduce((a,[,v])=>a+v,0);
+  document.getElementById('m-saldo').textContent=R(tot);
+  document.getElementById('m-nsem').textContent=db.semanais.length;
+  document.getElementById('m-nesp').textContent=db.especiais.length;
+  const metaTot=Object.values(db.metas).reduce((a,v)=>a+v.meta,0);
+  const budgetTot=Object.values(db.metas).reduce((a,v)=>a+getBudget(v.meta),0);
+  const saldoTot=Object.values(db.metas).reduce((a,v)=>a+v.saldo,0);
+  const pct=budgetTot>0?Math.round(saldoTot/budgetTot*100):0;
+  document.getElementById('m-meta').textContent=pct+'%';
+  document.getElementById('prog-meta').style.width=Math.min(pct,100)+'%';
+  document.getElementById('prog-meta').className='progress-fill '+(pct>=90?'fill-red':pct>=70?'fill-gold':'fill-green');
+
+  const pos=entries.filter(([,v])=>v>0);
+  const pal=['#2D4A3E','#4A7A68','#8B6914','#1E4A7A','#5C8CC4','#B83232','#6B3E8B','#3E6B3E','#8B3E8B','#3E8B6B'];
+  if(chPDV)chPDV.destroy();
+  chPDV=new Chart(document.getElementById('ch-pdv'),{
+    type:'bar',
+    data:{labels:pos.map(([k])=>short(k)),datasets:[{label:'Saldo',data:pos.map(([,v])=>Math.round(v)),backgroundColor:pal.slice(0,pos.length),borderRadius:5}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{font:{size:10},autoSkip:false,maxRotation:40}},y:{ticks:{callback:v=>'R$'+Math.round(v/1000)+'k'}}}}
+  });
+
+  const tipoData={Semanal:11+db.semanais.length,Especial:Math.max(1,db.especiais.filter(p=>p.tipo==='Especial').length),Lançamento:Math.max(3,db.especiais.filter(p=>p.tipo==='Lançamento').length),Kit:Math.max(2,db.especiais.filter(p=>p.tipo==='Kit').length)};
+  if(chTipo)chTipo.destroy();
+  chTipo=new Chart(document.getElementById('ch-tipo'),{
+    type:'doughnut',
+    data:{labels:Object.keys(tipoData),datasets:[{data:Object.values(tipoData),backgroundColor:['#2D4A3E','#4A7A68','#8B6914','#1E4A7A'],borderWidth:3,borderColor:'#fff'}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:11},padding:12}}}}
+  });
+
+  const tbody=document.getElementById('tbl-dash');
+  const rows=entries.map(([pdv,saldo])=>`<tr>
+    <td style="font-size:12px">${pdv}</td>
+    <td>${respBadge(PDV_RESP[pdv]||'')}</td>
+    <td class="tr mono ${saldo<0?'neg':''}">${R(saldo)}</td>
+    <td class="tr mono">${saldo>0?R(saldo*1.47):'—'}</td>
+    <td class="tr mono">${saldo>0?R(saldo*1.15):'—'}</td>
+    <td style="font-size:12px">20/07/2026</td>
+  </tr>`);
+  rows.push(`<tr class="total-row"><td colspan="2"><strong>Total</strong></td><td class="tr">${R(tot)}</td><td class="tr">${R(tot*1.47)}</td><td class="tr">${R(tot*1.15)}</td><td></td></tr>`);
+  tbody.innerHTML=rows.join('');
+}
+
+/* ─────────── METAS ─────────── */
+let chMetas;
+// VD e HUB compartilham uma meta única (canal Venda Direta)
+const VD_HUB = ['18501 - MATEUS BORDIN & CIA LTDA / VD','23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB'];
+function getMetaVDHUB(){ return db.metas['18501 - MATEUS BORDIN & CIA LTDA / VD']?.meta || 3700000; }
+function getGastoVDHUB(){
+  return (db.metas['18501 - MATEUS BORDIN & CIA LTDA / VD']?.saldo||0)
+       + (db.metas['23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB']?.saldo||0);
+}
+
+function renderMetas(){
+  const budgetPct=getBudgetPct(), pctLabel=getBudgetLabel();
+  const badgeEl=document.getElementById('budget-rule-badge');
+  if(badgeEl){
+    badgeEl.textContent='Budget: '+pctLabel;
+    badgeEl.style.background=budgetPct<1?'var(--gold-light)':'var(--accent-light)';
+    badgeEl.style.color=budgetPct<1?'var(--gold)':'var(--accent)';
+  }
+  const hdrDisp=document.getElementById('meta-hdr-disp');
+  if(hdrDisp) hdrDisp.textContent='Disponivel ('+Math.round(budgetPct*100)+'% meta - Gasto)';
+  const rows=document.getElementById('metas-rows');
+  let totMeta=0,totComp=0,totSaldo=0;
+  let htmlRows='';
+
+  // Linha consolidada VD + HUB
+  const metaVDHUB   = getMetaVDHUB();
+  const gastoVDHUB  = getGastoVDHUB();
+  const budgetVDHUB = getBudget(metaVDHUB);
+  const dispVDHUB   = budgetVDHUB - gastoVDHUB;
+  const pctVH = metaVDHUB>0 ? Math.min(Math.round(gastoVDHUB/budgetVDHUB*100),999) : 0;
+  const corVH = pctVH>=90 ? 'var(--red)' : pctVH>=70 ? 'var(--gold)' : 'var(--accent)';
+  const gastoVD  = db.metas['18501 - MATEUS BORDIN & CIA LTDA / VD']?.saldo||0;
+  const gastoHUB = db.metas['23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB']?.saldo||0;
+  totMeta+=metaVDHUB; totComp+=gastoVDHUB; totSaldo+=dispVDHUB;
+
+  const clsVH = dispVDHUB<0 ? 'neg' : 'pos';
+  htmlRows += [
+    '<div class="meta-row" style="background:var(--accent-light);border-left:3px solid var(--accent)">',
+    '<div style="font-size:12px;font-weight:600;color:var(--accent)">',
+    '<b>VD + HUB</b> <span style="font-size:10px;font-weight:400;color:var(--accent-mid)"> &middot; meta compartilhada</span>',
+    '<div style="font-size:11px;color:var(--text2);margin-top:2px">',
+    'VD: '+R(gastoVD)+' &nbsp;&middot;&nbsp; HUB: '+R(gastoHUB),
+    '</div></div>',
+    '<div><input class="meta-input" id="mm-VDHUB" type="number" value="'+metaVDHUB+'"',
+    ' oninput="updateMetaVDHUB()" style="text-align:right;border-color:var(--accent)"/></div>',
+    '<div class="mono tr" style="color:var(--gold)">'+R(gastoVDHUB)+'</div>',
+    '<div class="mono tr '+clsVH+'">'+R(dispVDHUB)+'</div>',
+    '<div style="font-size:12px;font-weight:600;color:'+corVH+'">'+pctVH+'%</div>',
+    '</div>'
+  ].join('');
+
+  // Demais PDVs
+  Object.entries(db.metas).forEach(function(entry){
+    var pdv=entry[0], m=entry[1];
+    if(VD_HUB.indexOf(pdv)>=0) return;
+    var meta=m.meta, gasto=m.saldo;
+    var budget2=getBudget(meta), disponivel=getDisponivel(m);
+    var p2 = meta>0 ? Math.min(Math.round(gasto/budget2*100),999) : 0;
+    var cor2 = p2>=90 ? 'var(--red)' : p2>=70 ? 'var(--gold)' : 'var(--accent)';
+    var cls2 = disponivel<0 ? 'neg' : 'pos';
+    totMeta+=meta; totComp+=gasto; totSaldo+=disponivel;
+    var safeId = pdv.replace(/[^a-z0-9]/gi,'');
+    htmlRows += [
+      '<div class="meta-row">',
+      '<div style="font-size:12px">'+short(pdv)+'</div>',
+      '<div><input class="meta-input" id="mm-'+safeId+'"',
+      ' type="number" value="'+meta+'" oninput="updateMetaTotal()" style="text-align:right"/></div>',
+      '<div class="mono tr" style="color:var(--gold)">'+R(gasto)+'</div>',
+      '<div class="mono tr '+cls2+'">'+R(disponivel)+'</div>',
+      '<div style="font-size:12px;font-weight:500;color:'+cor2+'">'+p2+'%</div>',
+      '</div>'
+    ].join('');
+  });
+  rows.innerHTML = htmlRows;
+
+  document.getElementById('meta-total-val').textContent=R(totMeta);
+  document.getElementById('meta-compra-val').textContent=R(totComp);
+  document.getElementById('meta-saldo-val').textContent=R(totSaldo);
+  document.getElementById('meta-tot-mes').textContent=R(totMeta);
+  document.getElementById('meta-tot-comp').textContent=R(totComp);
+  document.getElementById('meta-tot-saldo').textContent=R(totSaldo);
+  var totPct=totMeta>0?Math.round(totComp/totMeta*100):0;
+  document.getElementById('meta-tot-pct').textContent=totPct+'% usado';
+
+  // Grafico VD+HUB consolidado
+  var labelsC=['VD+HUB'].concat(Object.keys(db.metas).filter(function(p){return VD_HUB.indexOf(p)<0;}).map(short));
+  var metasC=[metaVDHUB].concat(Object.entries(db.metas).filter(function(e){return VD_HUB.indexOf(e[0])<0;}).map(function(e){return Math.round(e[1].meta);}));
+  var gastosC=[gastoVDHUB].concat(Object.entries(db.metas).filter(function(e){return VD_HUB.indexOf(e[0])<0;}).map(function(e){return Math.round(e[1].saldo);}));
+  if(chMetas)chMetas.destroy();
+  chMetas=new Chart(document.getElementById('ch-metas'),{
+    type:'bar',
+    data:{labels:labelsC,datasets:[
+      {label:'Meta (teto)',data:metasC,backgroundColor:'rgba(45,74,62,.2)',borderColor:'#2D4A3E',borderWidth:1.5,borderRadius:3},
+      {label:'Ja gasto',data:gastosC,backgroundColor:'rgba(139,105,20,.75)',borderColor:'#8B6914',borderWidth:1,borderRadius:3},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'top',labels:{font:{size:11}}}},
+      scales:{x:{ticks:{font:{size:10}}},y:{ticks:{callback:function(v){return 'R$'+Math.round(v/1000)+'k';}}}}}
+  });
+}
+function updateMetaVDHUB(){
+  // Ao editar o input VD+HUB, propagar para ambos no db.metas
+  const el=document.getElementById('mm-VDHUB');
+  if(!el)return;
+  const val=parseFloat(el.value)||0;
+  // Não salva ainda — só reflete no total visual
+  updateMetaTotal();
+}
+
+function updateMetaTotal(){
+  let tot=0;
+  const vdhubEl=document.getElementById('mm-VDHUB');
+  if(vdhubEl)tot+=parseFloat(vdhubEl.value)||0;
+  Object.keys(db.metas).forEach(pdv=>{
+    if(['18501 - MATEUS BORDIN & CIA LTDA / VD','23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB'].includes(pdv))return;
+    const id='mm-'+pdv.replace(/[^a-z0-9]/gi,'');
+    const el=document.getElementById(id);
+    if(el)tot+=parseFloat(el.value)||0;
+  });
+  document.getElementById('meta-tot-mes').textContent=R(tot);
+}
+
+function salvarMetas(){
+  // Save VDHUB shared meta to both VD and HUB
+  const vdhubEl=document.getElementById('mm-VDHUB');
+  if(vdhubEl){
+    const val=parseFloat(vdhubEl.value)||0;
+    if(db.metas['18501 - MATEUS BORDIN & CIA LTDA / VD'])
+      db.metas['18501 - MATEUS BORDIN & CIA LTDA / VD'].meta=val;
+    if(db.metas['23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB'])
+      db.metas['23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB'].meta=val;
+  }
+  // Save remaining PDVs
+  Object.keys(db.metas).forEach(pdv=>{
+    if(['18501 - MATEUS BORDIN & CIA LTDA / VD','23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB'].includes(pdv))return;
+    const id='mm-'+pdv.replace(/[^a-z0-9]/gi,'');
+    const el=document.getElementById(id);
+    if(el)db.metas[pdv].meta=parseFloat(el.value)||0;
+  });
+  saveDB();renderMetas();syncToCloud();toast('Metas salvas!');
+}
+
+function resetMetas(){
+  db.metas=JSON.parse(JSON.stringify(METAS_DEFAULT));
+  saveDB();renderMetas();toast('Metas restauradas','warn');
+}
+
+/* ─────────── CICLOS ─────────── */
+function salvarCiclo(){
+  const nome=document.getElementById('nc-nome').value.trim();
+  if(!nome){toast('Informe o nome do ciclo','err');return;}
+  db.ciclos.push({id:Date.now(),nome,inicio:document.getElementById('nc-inicio').value,fim:document.getElementById('nc-fim').value,tipo:document.getElementById('nc-tipo').value,obs:document.getElementById('nc-obs').value});
+  saveDB();syncToCloud();
+  ['nc-nome','nc-inicio','nc-fim','nc-obs'].forEach(id=>document.getElementById(id).value='');
+  renderCiclos();toast('Ciclo salvo!');
+}
+
+let chCiclo;
+function renderCiclos(){
+  const grid=document.getElementById('ciclos-grid');
+  if(!db.ciclos.length){grid.innerHTML='<p style="color:var(--text3);font-size:13px;padding:8px">Nenhum ciclo cadastrado.</p>';return;}
+  grid.innerHTML=db.ciclos.map(c=>{
+    const pedidos=[...db.especiais.filter(p=>p.ciclo===c.nome)];
+    const tot=pedidos.reduce((a,p)=>a+p.valrep,0);
+    return `<div class="ciclo-card" onclick="detalharCiclo('${c.id}')">
+      <div class="ciclo-badge"><span class="badge b-esp" style="font-size:10px">${c.tipo.split(' ')[0]}</span></div>
+      <div class="ciclo-nome">${c.nome}</div>
+      <div class="ciclo-fat">Fat.: ${c.fim||'—'} · ${pedidos.length} pedido(s)</div>
+      <div class="ciclo-val">${R(tot)}</div>
+    </div>`;
+  }).join('');
+}
+
+function detalharCiclo(id){
+  const c=db.ciclos.find(x=>String(x.id)===String(id));
+  if(!c)return;
+  document.getElementById('ciclo-detalhe').style.display='block';
+  document.getElementById('ciclo-det-title').textContent=c.nome+' · '+c.tipo;
+  const ped=db.especiais.filter(p=>p.ciclo===c.nome);
+  const tbody=document.getElementById('tbl-ciclo-det');
+  if(!ped.length){tbody.innerHTML='<tr><td colspan="3"><div class="empty" style="padding:16px"><p>Sem pedidos neste ciclo.</p></div></td></tr>';return;}
+  tbody.innerHTML=ped.map(p=>`<tr><td style="font-size:12px">${short(p.pdv)}</td><td class="tr mono">${R(p.valrep)}</td><td class="tr mono">${R(p.totpedido||p.valrep)}</td></tr>`).join('');
+  const labels=ped.map(p=>short(p.pdv));
+  const vals=ped.map(p=>Math.round(p.valrep));
+  if(chCiclo)chCiclo.destroy();
+  chCiclo=new Chart(document.getElementById('ch-ciclo'),{
+    type:'bar',
+    data:{labels,datasets:[{label:'Val. Reposição',data:vals,backgroundColor:'#4A7A68',borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{font:{size:10},autoSkip:false,maxRotation:35}},y:{ticks:{callback:v=>'R$'+Math.round(v/1000)+'k'}}}}
+  });
+  document.getElementById('ciclo-detalhe').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+/* ─────────── EVOLUÇÃO ─────────── */
+let chEvol;
+function renderEvol(){
+  const all=[...db.semanais.map(p=>({ref:p.semana,val:p.valrep})),...db.especiais.map(p=>({ref:p.ciclo,val:p.valrep}))];
+  const labels=[...new Set(all.map(p=>p.ref))];
+  const vals=labels.map(l=>all.filter(p=>p.ref===l).reduce((a,p)=>a+p.valrep,0));
+  if(chEvol)chEvol.destroy();
+  chEvol=new Chart(document.getElementById('ch-evol'),{
+    type:'line',
+    data:{labels:labels.length?labels:['—'],datasets:[{label:'Val. Reposição',data:vals.length?vals:[0],borderColor:'#2D4A3E',backgroundColor:'rgba(45,74,62,.07)',tension:.35,fill:true,pointRadius:4,pointBackgroundColor:'#2D4A3E'}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>'R$'+Math.round(v/1000)+'k'}}}}
+  });
+}
+
+/* ─────────── RELATÓRIO ─────────── */
+function gerarRel(){
+  const tipo=document.getElementById('rel-tipo').value;
+  const resp=document.getElementById('rel-resp').value;
+  const periodo=document.getElementById('rel-periodo').value||'—';
+  const now=new Date().toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  document.getElementById('rel-data-print').textContent='Gerado em '+now+' · Período: '+periodo;
+
+  let rows=[];
+  if(tipo==='todos'||tipo==='semanal'){
+    let s=db.semanais;if(resp)s=s.filter(p=>p.resp===resp);
+    rows=[...rows,...s.map(p=>({...p,tg:'Semanal',ref:p.semana}))];
+  }
+  if(tipo==='todos'||tipo==='especial'){
+    let e=db.especiais;if(resp)e=e.filter(p=>p.resp===resp);
+    rows=[...rows,...e.map(p=>({...p,tg:'Especial',ref:p.ciclo}))];
+  }
+  if(tipo==='pdv'||tipo==='responsavel'){
+    let all=[...db.semanais.map(p=>({...p,tg:'Semanal',ref:p.semana})),...db.especiais.map(p=>({...p,tg:'Especial',ref:p.ciclo}))];
+    if(resp)all=all.filter(p=>p.resp===resp);
+    rows=all;
+  }
+
+  const totVal=rows.reduce((a,p)=>a+p.valrep,0);
+  const totTRF=rows.reduce((a,p)=>a+p.trf,0);
+  const totREM=rows.reduce((a,p)=>a+p.rem,0);
+
+  const html=`
+  <div class="card">
+    <div class="sec-hdr"><div class="sec-title">Relatório · ${periodo} ${resp?'· '+resp:''}</div><div style="font-size:12px;color:var(--text3)">${now}</div></div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="metric green" style="margin-bottom:0"><div class="metric-icon"><i class="ti ti-sum"></i></div><div class="metric-label">Total registros</div><div class="metric-value">${rows.length}</div></div>
+      <div class="metric gold" style="margin-bottom:0"><div class="metric-icon"><i class="ti ti-wallet"></i></div><div class="metric-label">Val. Reposição</div><div class="metric-value sm">${R(totVal)}</div></div>
+      <div class="metric blue" style="margin-bottom:0"><div class="metric-icon"><i class="ti ti-calculator"></i></div><div class="metric-label">TRF + REM</div><div class="metric-value sm">${R(totTRF+totREM)}</div></div>
+    </div>
+    ${rows.length?`<div class="tbl-wrap"><table>
+      <thead><tr><th>PDV</th><th>Resp.</th><th>Tipo</th><th>Referência</th><th>Cód. MAR</th><th class="tr">Val. Rep.</th><th class="tr">TRF</th><th class="tr">REM</th><th>Prev. Fat.</th><th>Obs.</th></tr></thead>
+      <tbody>
+        ${rows.map(p=>`<tr>
+          <td style="font-size:12px">${short(p.pdv)}</td>
+          <td>${respBadge(p.resp)}</td>
+          <td>${badge(p.tg,p.tg==='Semanal'?'b-sem':'b-esp')}</td>
+          <td style="font-size:12px">${p.ref}</td>
+          <td class="mono">${p.codmar||'—'}</td>
+          <td class="tr mono">${R(p.valrep)}</td>
+          <td class="tr mono">${R(p.trf)}</td>
+          <td class="tr mono">${R(p.rem)}</td>
+          <td style="font-size:12px">${p.prevfat||'—'}</td>
+          <td style="font-size:12px">${p.obs||'—'}</td>
+        </tr>`).join('')}
+        <tr class="total-row"><td colspan="5"><strong>TOTAL</strong></td><td class="tr">${R(totVal)}</td><td class="tr">${R(totTRF)}</td><td class="tr">${R(totREM)}</td><td colspan="2"></td></tr>
+      </tbody>
+    </table></div>`:'<div class="empty"><i class="ti ti-file-off"></i><p>Nenhum dado para o filtro selecionado.</p></div>'}
+  </div>`;
+  document.getElementById('rel-content').innerHTML=html;
+  toast('Relatório gerado! Use Imprimir para salvar PDF.');
+}
+
+/* ─────────── EXPORT CSV ─────────── */
+function exportCSV(){
+  const all=[
+    ...db.semanais.map(p=>['Semanal',short(p.pdv),p.resp,p.semana,p.codmar,p.valrep.toFixed(2),p.trf.toFixed(2),p.rem.toFixed(2),p.prevfat,p.obs]),
+    ...db.especiais.map(p=>['Especial',short(p.pdv),p.resp,p.ciclo,p.codmar,p.valrep.toFixed(2),p.trf.toFixed(2),p.rem.toFixed(2),p.prevfat,p.obs]),
+  ];
+  if(!all.length){toast('Nenhum dado para exportar','warn');return;}
+  const hdr=['Tipo','PDV','Responsável','Referência','Cód. MAR','Val. Rep.','TRF','REM','Prev. Fat.','Observação'];
+  const csv=[hdr,...all].map(r=>r.join(';')).join('\n');
+  const a=document.createElement('a');
+  a.href='data:text/csv;charset=utf-8,\uFEFF'+encodeURIComponent(csv);
+  a.download='artesil_'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click();toast('CSV exportado!');
+}
+
+/* ─────────── MARCAS TOGGLE ─────────── */
+function toggleMarca(prefix, marca, btn){
+  btn.classList.toggle('sel');
+  const hidden = document.getElementById(prefix+'-marcas');
+  const selecionadas = [...document.querySelectorAll(`#${prefix}-marcas-group .marca-btn.sel`)]
+    .map(b => b.textContent.trim());
+  hidden.value = selecionadas.join('/');
+}
+function resetMarcas(prefix){
+  document.querySelectorAll(`#${prefix}-marcas-group .marca-btn`).forEach(b=>b.classList.remove('sel'));
+  document.getElementById(prefix+'-marcas').value='';
+}
+
+/* ─────────── TABELA DE TAXAS E BOLETOS ─────────── */
+const COND_CONFIG = {
+  'AV5':  {label:'À Vista 5d',      taxa:0,      parcelas:[5]},
+  'BO30': {label:'30 dias',          taxa:0.0151, parcelas:[30]},
+  'BO45': {label:'45 dias',          taxa:0.0226, parcelas:[45]},
+  'BO60': {label:'60 dias',          taxa:0.0311, parcelas:[60]},
+  'BO90': {label:'90 dias',          taxa:0.0495, parcelas:[90]},
+  'BB01': {label:'35/55 dias',       taxa:0.0226, parcelas:[35,55]},
+  'BB02': {label:'30/60 dias',       taxa:0.0226, parcelas:[30,60]},
+  'BB03': {label:'30/60/90 dias',    taxa:0.0311, parcelas:[30,60,90]},
+  'BB04': {label:'30/60/90/120 dias',taxa:0.0389, parcelas:[30,60,90,120]},
+  'BB05': {label:'30/60/90/120/150 dias',taxa:0.0495,parcelas:[30,60,90,120,150]},
+  'BB06': {label:'30/60/90/120/150/180 dias',taxa:0.0577,parcelas:[30,60,90,120,150,180]},
+};
+
+// PDV default conditions based on current setup
+const PDV_COND_DEFAULT = {
+  '18501 - MATEUS BORDIN & CIA LTDA / VD':               'BB02',
+  '23699 - VICTORIA PERFUMES E COSMETICOS LTDA / HUB':   'BB02',
+  '4605 - ARTESIL PRODUTOS NATURAIS LTDA / CENTRO':      'BB02',
+  '13136 - ROBERTA BORDIN / PÁTIO':                      'BB02',
+  '12540 - MATEUS BORDIN - ME / BRASÃO':                 'AV5',
+  '21016 - ROBERTA BORDIN & CIA LTDA / EFAPI':           'AV5',
+  '12716 - MATEUS BORDIN - ME / CENTER':                 'AV5',
+  '12721 - MATEUS BORDIN - ME / ITÁLIA':                 'AV5',
+  '8348 - ARTESIL PERFUMES E COSMETICOS / XAXIM':        'AV5',
+  '12354 - MATEUS BORDIN - ME / ALFA':                   'AV5',
+  '23857 - VICTORIA PERFUMES E COSMETICOS LTDA / PULSE': 'AV5',
+};
+
+// Apply default condição when PDV selected in especial form
+function applyDefaultCond(){
+  const pdv = document.getElementById('e-pdv').value;
+  const def = PDV_COND_DEFAULT[pdv];
+  if(!def) return;
+  for(let f=1;f<=4;f++){
+    const el = document.getElementById('e-cond'+f);
+    if(el && (!el.value || el.value==='BB02')) el.value = def;
+  }
+}
+
+// Set default condição based on PDV selected
+function applyPDVCondDefault(prefix){
+  const pdv = document.getElementById(prefix+'-pdv').value;
+  const def = PDV_COND_DEFAULT[pdv];
+  if(!def) return;
+  for(let f=1;f<=4;f++){
+    const el = document.getElementById(prefix.replace('s','e')+'-cond'+f) || document.getElementById('e-cond'+f);
+    if(el && el.value==='BB02') el.value = def;
+  }
+}
+
+// Generate boleto lines from a fase
+function gerarBoletos(fatDate, condCode, valorFase, taxaBase){
+  const cfg = COND_CONFIG[condCode];
+  if(!cfg || !fatDate) return [];
+  const base = new Date(fatDate + 'T00:00:00');
+  const nParcelas = cfg.parcelas.length;
+  const valorParcela = valorFase / nParcelas;
+  // taxa total dividida pelo número de parcelas aplicada sobre cada boleto
+  const taxaValor = valorFase * cfg.taxa;
+  const taxaPorBoleto = taxaValor / nParcelas;
+  return cfg.parcelas.map((dias, i) => {
+    const dt = new Date(base);
+    dt.setDate(dt.getDate() + dias);
+    return {
+      n: i+1,
+      data: dt.toISOString().slice(0,10),
+      dataFmt: dt.toLocaleDateString('pt-BR'),
+      valor: valorParcela,
+      taxa: taxaPorBoleto,
+      total: valorParcela + taxaPorBoleto,
+      cond: cfg.label,
+    };
+  });
+}
+
+/* ─────────── FASES DE FATURAMENTO ─────────── */
+let fasesVisiveis = 1;
+
+function adicionarFase(){
+  for(let f=2;f<=4;f++){
+    const row=document.getElementById('fase-'+f);
+    if(row && row.style.display==='none'){
+      row.style.display='grid';
+      fasesVisiveis=f;
+      // redistribute pct evenly when adding
+      const pct1=document.getElementById('e-pct1');
+      if(f===2 && parseInt(pct1.value)===100){pct1.value=55;document.getElementById('e-pct2').value=45;}
+      if(f===3){pct1.value=55;document.getElementById('e-pct2').value=35;document.getElementById('e-pct3').value=10;}
+      if(f===4){pct1.value=55;document.getElementById('e-pct2').value=35;document.getElementById('e-pct3').value=5;document.getElementById('e-pct4').value=5;}
+      if(fasesVisiveis===4)document.getElementById('btn-add-fase').style.display='none';
+      updatePctTotal();calcE();
+      return;
+    }
+  }
+}
+
+function removerFase(n){
+  const row=document.getElementById('fase-'+n);
+  if(row){row.style.display='none';document.getElementById('e-fat'+n).value='';document.getElementById('e-pct'+n).value=0;}
+  fasesVisiveis=Math.max(1,fasesVisiveis-1);
+  document.getElementById('btn-add-fase').style.display='';
+  updatePctTotal();calcE();
+}
+
+function updatePctTotal(){
+  let total=0;
+  for(let f=1;f<=4;f++){
+    const row=document.getElementById('fase-'+f);
+    const el=document.getElementById('e-pct'+f);
+    if(el && (!row||row.style.display!=='none'))total+=parseFloat(el.value)||0;
+  }
+  const info=document.getElementById('pct-total-info');
+  if(!info)return;
+  const ok=total===100;
+  info.textContent='Total: '+total+'%'+(ok?' ✓':' ← deve ser 100%');
+  info.style.color=ok?'var(--accent)':total>100?'var(--red)':'var(--gold)';
+}
+
+/* ─────────── CONTAS A RECEBER ─────────── */
+let chPrev;
+function rendPrev(){
+  const tipoF=document.getElementById('pf-tipo').value;
+  const pdvF=document.getElementById('pf-pdv').value;
+  const respF=document.getElementById('pf-resp').value;
+  const today=new Date(); today.setHours(0,0,0,0);
+  const d30=new Date(today); d30.setDate(d30.getDate()+30);
+  const d60=new Date(today); d60.setDate(d60.getDate()+60);
+
+  // Helper: valor total de uma linha
+  const linhaTotal = p => p.totalBoleto != null ? p.totalBoleto : (p.valrep||0)+(p.trf||0)+(p.rem||0);
+
+  // Helper: expandir boletos de um pedido (semanal ou especial sem fases)
+  function expandirBoletos(p, condCode, prevfat, valrep, trf, rem, extras={}){
+    const cfg = COND_CONFIG[condCode];
+    if(!cfg || !prevfat) return [{...p,...extras,
+      prevfat,valrep,trf,rem,totalBoleto:valrep+trf+rem,
+      condLabel:cfg?cfg.label:(condCode||'—')}];
+    // taxa percentual da condição
+    const taxaRate = cfg.taxa||0;
+    const boletos = gerarBoletos(prevfat, condCode, valrep, taxaRate);
+    if(!boletos||boletos.length<=1){
+      const taxa = valrep * taxaRate;
+      return [{...p,...extras,prevfat,valrep,
+        trf:taxa,rem,totalBoleto:valrep+taxa+rem,
+        condLabel:cfg.label}];
+    }
+    return boletos.map((b)=>({...p,...extras,
+      prevfat:b.data,valrep:b.valor,trf:b.taxa,rem:0,
+      totalBoleto:b.total,condLabel:b.cond,
+      boletoNum:b.n,boletoTotal:boletos.length}));
+  }
+
+  // Expand pedidos semanais — gerar boletos por condição do PDV
+  const semExpanded=[];
+  db.semanais.filter(p=>p.prevfat).forEach(p=>{
+    const condCode = PDV_COND_DEFAULT[p.pdv]||'AV5';
+    const linhas = expandirBoletos(p, condCode, p.prevfat, p.valrep, p.trf, p.rem,
+      {tg:'Semanal',ref:p.semana});
+    semExpanded.push(...linhas);
+  });
+
+  // Expand fases + boletos de especiais
+  const espExpanded=[];
+  db.especiais.forEach(p=>{
+    if(p.fases && p.fases.length>0){
+      p.fases.forEach(f=>{
+        if(!f.prevfat)return;
+        const condCode=f.cond||'AV5';
+        const valF=f.valFase||0;
+        const extras={tg:'Especial',ref:p.ciclo,faseNum:f.fase,fasePct:f.pct,isFase:true};
+        if(f.boletos && f.boletos.length>1){
+          f.boletos.forEach(b=>{
+            espExpanded.push({...p,...extras,
+              prevfat:b.data,prazo:condCode,
+              valrep:b.valor,trf:b.taxa,rem:0,totalBoleto:b.total,
+              boletoNum:b.n,boletoTotal:f.boletos.length,
+              condLabel:b.cond});
+          });
+        } else {
+          const cfg=COND_CONFIG[condCode]||{};
+          const taxa=valF*(cfg.taxa||0);
+          espExpanded.push({...p,...extras,
+            prevfat:f.prevfat,prazo:condCode,
+            valrep:valF,trf:taxa,rem:0,totalBoleto:valF+taxa,
+            condLabel:cfg.label||condCode});
+        }
+      });
+    } else if(p.prevfat){
+      // Especial sem fases — expandir boletos pelo PDV padrão
+      const condCode=p.prazo||PDV_COND_DEFAULT[p.pdv]||'AV5';
+      const linhas=expandirBoletos(p,condCode,p.prevfat,p.valrep,p.trf,p.rem,
+        {tg:'Especial',ref:p.ciclo});
+      espExpanded.push(...linhas);
+    }
+  });
+
+  const all=[...semExpanded,...espExpanded]
+  .filter(p=>(!tipoF||p.tg===tipoF)&&(!pdvF||p.pdv===pdvF)&&(!respF||p.resp===respF))
+  .sort((a,b)=>new Date(a.prevfat)-new Date(b.prevfat));
+
+  // Totais usando linhaTotal
+  const totAll=all.reduce((a,p)=>a+linhaTotal(p),0);
+  const tot30=all.filter(p=>new Date(p.prevfat+'T00:00:00')<=d30).reduce((a,p)=>a+linhaTotal(p),0);
+  const tot60=all.filter(p=>new Date(p.prevfat+'T00:00:00')<=d60).reduce((a,p)=>a+linhaTotal(p),0);
+  document.getElementById('prev-total').textContent=R(totAll);
+  document.getElementById('prev-30').textContent=R(tot30);
+  document.getElementById('prev-60').textContent=R(tot60);
+
+  // Totais rodapé
+  const totRep=all.reduce((a,p)=>a+(p.valrep||0),0);
+  const totTRF=all.reduce((a,p)=>a+(p.trf||0),0);
+  const totFinal=all.reduce((a,p)=>a+linhaTotal(p),0);
+  document.getElementById('prev-tot-n').textContent=all.length;
+  document.getElementById('prev-tot-rep').textContent=R(totRep);
+  document.getElementById('prev-tot-trf').textContent=R(totTRF);
+  document.getElementById('prev-tot-final').textContent=R(totFinal);
+  document.getElementById('prev-totais').style.display=all.length?'block':'none';
+
+  // Tabela
+  const tbody=document.getElementById('tbl-prev');
+  if(!all.length){
+    tbody.innerHTML='<tr><td colspan="12"><div class="empty"><i class="ti ti-calendar-off"></i><p>Nenhum pedido com previsão de faturamento cadastrado.</p></div></td></tr>';
+  } else {
+    let lastDate='';
+    tbody.innerHTML=all.map(p=>{
+      const fat=p.prevfat?new Date(p.prevfat+'T00:00:00'):null;
+      const fatStr=fat?fat.toLocaleDateString('pt-BR'):'—';
+      const isToday=fat&&fat.getTime()===today.getTime();
+      const isPast=fat&&fat<today;
+      const isNear=fat&&fat>today&&fat<=d30;
+      const dateColor=isPast?'var(--red)':isNear?'var(--gold)':'var(--text)';
+      const dateSep=fatStr!==lastDate?`<tr style="background:var(--surface2)"><td colspan="12" style="padding:6px 12px;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">📅 ${fatStr}${isPast?' · VENCIDO':isToday?' · HOJE':isNear?' · PRÓXIMO':''}</td></tr>`:'';
+      lastDate=fatStr;
+      return dateSep+`<tr>
+        <td style="font-size:12px;font-weight:600;color:${dateColor};white-space:nowrap">${fatStr}</td>
+        <td style="font-size:12px;white-space:nowrap">${short(p.pdv)}</td>
+        <td>${respBadge(p.resp)}</td>
+        <td>
+          ${badge(p.tg,p.tg==='Semanal'?'b-sem':'b-esp')}
+          ${p.isFase?`<span style="font-size:10px;background:var(--gold-light);color:var(--gold);padding:1px 5px;border-radius:99px;font-weight:600;margin-left:3px">F${p.faseNum}·${p.fasePct}%</span>`:''}
+          ${p.boletoNum!=null?`<span style="font-size:10px;background:var(--blue-light);color:var(--blue);padding:1px 5px;border-radius:99px;font-weight:600;margin-left:2px">Bol.${p.boletoNum}/${p.boletoTotal}</span>`:''}
+        </td>
+        <td style="font-size:12px">${p.ref}</td>
+        <td style="font-size:12px">${p.condLabel||p.marcas||'—'}</td>
+        <td class="tr mono">${R(p.valrep)}</td>
+        <td class="tr mono" style="font-size:11px;color:var(--gold)">${p.trf?R(p.trf):'—'}</td>
+        <td class="tr mono" style="font-size:11px;color:var(--text2)">${p.rem?R(p.rem):'—'}</td>
+        <td class="tr mono" style="font-weight:600;color:var(--accent)">${R(p.totalBoleto!=null?p.totalBoleto:p.valrep+p.trf+(p.rem||0))}</td>
+        <td style="font-size:12px">${p.prazo||'—'}</td>
+        <td style="font-size:12px">${p.obs||'—'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Gráfico linha do tempo
+  const byDate={};
+  all.forEach(p=>{
+    const k=p.prevfat||'sem-data';
+    if(!byDate[k])byDate[k]={sem:0,esp:0};
+    if(p.tg==='Semanal')byDate[k].sem+=linhaTotal(p);
+    else byDate[k].esp+=linhaTotal(p);
+  });
+  const dates=Object.keys(byDate).sort();
+  const fmtD=d=>{try{return new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})}catch{return d}};
+  if(chPrev)chPrev.destroy();
+  chPrev=new Chart(document.getElementById('ch-prev'),{
+    type:'bar',
+    data:{
+      labels:dates.map(fmtD),
+      datasets:[
+        {label:'Semanal',data:dates.map(d=>Math.round(byDate[d].sem)),backgroundColor:'rgba(45,74,62,.75)',borderRadius:4,stack:'s'},
+        {label:'Especial',data:dates.map(d=>Math.round(byDate[d].esp)),backgroundColor:'rgba(139,105,20,.75)',borderRadius:4,stack:'s'},
+      ]
+    },
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'top',labels:{font:{size:11}}}},
+      scales:{
+        x:{ticks:{font:{size:10},autoSkip:false,maxRotation:40}},
+        y:{ticks:{callback:v=>'R$'+Math.round(v/1000)+'k'},stacked:true}
+      }
+    }
+  });
+}
+
+/* ─────────── INIT ─────────── */
+// Inicializar: carregar do Supabase, depois ativar realtime
+loadFromCloud().then(function(){
+  renderDash();
+  rendS();
+  rendE();
+  updateSBCount();
+  startRealtime();
+});
+</script><div id="loading-overlay" style="position: fixed; inset: 0px; background: rgba(255, 255, 255, 0.85); z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: &quot;DM Sans&quot;, sans-serif;"><div style="width:36px;height:36px;border:3px solid #E8F0ED;border-top-color:#2D4A3E;border-radius:50%;animation:spin .7s linear infinite"></div><div style="font-size:13px;color:#2D4A3E;font-weight:500">Carregando dados...</div></div>
+
+
+</body></html>
